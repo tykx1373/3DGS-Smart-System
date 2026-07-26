@@ -361,3 +361,66 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+## ==================== Project-specific ====================
+
+# ImGui layout state (per-user, regenerated at runtime)
+imgui.ini
+3DGS/imgui.ini
+
+# Downloaded third-party archives (not needed in repo)
+*.zip
+
+# Build output
+bin/
+obj/
+
+# Runtime logs
+logs/
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+## ==================== Third-party (unneeded files) ====================
+# Keep only what the build needs: glfw/include + glfw/lib-vc2022,
+# imgui core + opengl3/glfw backends. Everything else is ignored.
+
+# GLFW: docs and non-vc2022 lib variants
+glfw/docs/
+glfw/lib-mingw-w64/
+glfw/lib-static-ucrt/
+glfw/lib-vc2013/
+glfw/lib-vc2015/
+glfw/lib-vc2017/
+glfw/lib-vc2019/
+glfw/README.md
+
+# ImGui: examples, misc, docs, github, and unused backends
+imgui/examples/
+imgui/misc/
+imgui/docs/
+imgui/.github/
+imgui/backends/imgui_impl_allegro5.*
+imgui/backends/imgui_impl_android.*
+imgui/backends/imgui_impl_dx9.*
+imgui/backends/imgui_impl_dx10.*
+imgui/backends/imgui_impl_dx11.*
+imgui/backends/imgui_impl_dx12.*
+imgui/backends/imgui_impl_glut.*
+imgui/backends/imgui_impl_metal*
+imgui/backends/imgui_impl_null.*
+imgui/backends/imgui_impl_osx.*
+imgui/backends/imgui_impl_sdl2.*
+imgui/backends/imgui_impl_sdl3.*
+imgui/backends/imgui_impl_sdlgpu3*
+imgui/backends/imgui_impl_sdlrenderer2.*
+imgui/backends/imgui_impl_sdlrenderer3.*
+imgui/backends/imgui_impl_vulkan.*
+imgui/backends/imgui_impl_wgpu.*
+imgui/backends/imgui_impl_win32.*
+imgui/backends/vulkan/
+imgui/backends/sdlgpu3/
+imgui/imgui_demo.cpp

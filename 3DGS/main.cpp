@@ -1,5 +1,5 @@
 // 3DGS GUI - ImGui + GLFW + OpenGL3
-// 3D Gaussian Splatting Tool Shell
+// 3D Gaussian Splatting Tool
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -7,128 +7,16 @@
 #include <stdio.h>
 #define GL_SILENCE_DEPRECATION
 #include <GLFW/glfw3.h>
-#include <vector>
-#include <string>
+
+#include "app_state.h"
+#include "log_system.h"
+#include "theme.h"
+#include "ui_main_window.h"
 
 // [Win32] Link with legacy_stdio_definitions for VS2015+ compatibility with older pre-compiled GLFW
 #if defined(_MSC_VER) && (_MSC_VER >= 1900)
 #pragma comment(lib, "legacy_stdio_definitions")
 #endif
-
-// ==================== Global State ====================
-struct AppState {
-    std::vector<std::string> logMessages;
-    std::string inputImagePath = "";
-    bool isRendering = false;
-    float renderProgress = 0.0f;
-    std::string outputPath = "";
-    float fontScale = 1.0f;
-};
-
-static AppState g_AppState;
-
-// ==================== Utility ====================
-void AddLog(const std::string& message) {
-    g_AppState.logMessages.push_back(message);
-}
-
-// ==================== Button Callbacks (Shell) ====================
-void OnImportImages() {
-    AddLog("[Import Images] Button clicked - not implemented yet");
-}
-
-void OnRender() {
-    AddLog("[Render] Button clicked - not implemented yet");
-    g_AppState.isRendering = !g_AppState.isRendering;
-    if (g_AppState.isRendering) {
-        AddLog("Rendering started... (simulated)");
-    } else {
-        AddLog("Rendering stopped. (simulated)");
-    }
-}
-
-void OnOutputResult() {
-    AddLog("[Output Result] Button clicked - not implemented yet");
-}
-
-// ==================== GUI Drawing ====================
-void DrawMainWindow() {
-    // Full-size window covering the viewport
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->Pos);
-    ImGui::SetNextWindowSize(viewport->Size);
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse
-        | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove
-        | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-    ImGui::Begin("3DGS##MainWindow", nullptr, window_flags);
-
-    // Ctrl+MouseWheel to zoom font
-    ImGuiIO& io = ImGui::GetIO();
-    if (io.KeyCtrl && io.MouseWheel != 0.0f) {
-        g_AppState.fontScale += io.MouseWheel * 0.05f;
-        g_AppState.fontScale = (g_AppState.fontScale < 0.5f) ? 0.5f : ((g_AppState.fontScale > 3.0f) ? 3.0f : g_AppState.fontScale);
-        io.FontGlobalScale = g_AppState.fontScale;
-    }
-
-    // Tab bar
-    if (ImGui::BeginTabBar("##MainTabs", ImGuiTabBarFlags_None)) {
-
-        // ---- Tab 1: Control Panel ----
-        if (ImGui::BeginTabItem("Control Panel")) {
-            ImGui::Spacing();
-            ImGui::Text("3D Gaussian Splatting Tool");
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            // Import Images
-            if (ImGui::Button("Import Images", ImVec2(-1, 40))) {
-                OnImportImages();
-            }
-            ImGui::Text("Current images: %s", g_AppState.inputImagePath.empty() ? "None" : g_AppState.inputImagePath.c_str());
-            ImGui::Spacing();
-
-            // Render
-            if (ImGui::Button(g_AppState.isRendering ? "Stop Render" : "Start Render", ImVec2(-1, 40))) {
-                OnRender();
-            }
-            if (g_AppState.isRendering) {
-                ImGui::ProgressBar(g_AppState.renderProgress, ImVec2(-1, 0), "Render Progress");
-            }
-            ImGui::Spacing();
-
-            // Output Result
-            if (ImGui::Button("Output Result", ImVec2(-1, 40))) {
-                OnOutputResult();
-            }
-            ImGui::Text("Output path: %s", g_AppState.outputPath.empty() ? "Not set" : g_AppState.outputPath.c_str());
-
-            ImGui::EndTabItem();
-        }
-
-        // ---- Tab 2: Log ----
-        if (ImGui::BeginTabItem("Log")) {
-            ImGui::Spacing();
-            if (ImGui::Button("Clear Log")) {
-                g_AppState.logMessages.clear();
-            }
-            ImGui::Separator();
-
-            ImGui::BeginChild("LogScroll", ImVec2(0, 0), ImGuiChildFlags_Borders);
-            for (const auto& msg : g_AppState.logMessages) {
-                ImGui::TextUnformatted(msg.c_str());
-            }
-            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
-                ImGui::SetScrollHereY(1.0f);
-            ImGui::EndChild();
-
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
-    }
-
-    ImGui::End();
-}
 
 // ==================== GLFW Error Callback ====================
 static void glfw_error_callback(int error, const char* description) {
@@ -147,7 +35,7 @@ int main(int, char**) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "3DGS - 3D Gaussian Splatting Tool", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1280, 720, u8"3DGS - 三维高斯泼溅工具", nullptr, nullptr);
     if (window == nullptr)
         return 1;
     glfwMakeContextCurrent(window);
@@ -157,19 +45,43 @@ int main(int, char**) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // Setup Dear ImGui style (Classic)
-    ImGui::StyleColorsClassic();
+    // Load Chinese font (Microsoft YaHei) with full Chinese glyph ranges
+    ImFont* font = io.Fonts->AddFontFromFileTTF(
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        18.0f,                       // Base font size
+        nullptr,                     // No oversampling
+        io.Fonts->GetGlyphRangesChineseFull()
+    );
+    if (font == nullptr) {
+        // Fallback to SimHei if YaHei not found
+        font = io.Fonts->AddFontFromFileTTF(
+            "C:\\Windows\\Fonts\\simhei.ttf",
+            18.0f,
+            nullptr,
+            io.Fonts->GetGlyphRangesChineseFull()
+        );
+    }
+    IM_ASSERT(font != nullptr && "Failed to load any Chinese font!");
+    // NOTE: Do NOT call io.Fonts->Build() here - the OpenGL3 backend handles it
+    // after ImGui_ImplOpenGL3_Init() in newer ImGui versions (1.92+)
+
+    // Setup Dear ImGui style - apply soft light theme by default
+    ApplyLightTheme();
+    ImGui::GetStyle().FontScaleMain = 1.3f;
 
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    // Initial log messages
-    AddLog("Welcome to 3DGS Tool");
-    AddLog("System initialized");
-    AddLog("Note: This is a UI shell, button functions are not yet implemented");
+    // Initialize log system (creates logs/ directory and opens log file)
+    LogSystem::Init();
+
+    // Initialize application
+    AppState appState;
+    LogSystem::Info(u8"3DGS 工具已初始化");
+    LogSystem::Info(u8"就绪，等待导入图片");
 
     // Main loop
     while (!glfwWindowShouldClose(window)) {
@@ -185,7 +97,7 @@ int main(int, char**) {
         ImGui::NewFrame();
 
         // Draw main window with tabs
-        DrawMainWindow();
+        DrawMainWindow(appState);
 
         // Rendering
         ImGui::Render();
@@ -200,7 +112,9 @@ int main(int, char**) {
         glfwSwapBuffers(window);
     }
 
-    // Cleanup
+    // Cleanup: stop pipeline first to join background thread
+    appState.pipeline.Stop();
+    appState.imageManager.ReleaseTextures();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
