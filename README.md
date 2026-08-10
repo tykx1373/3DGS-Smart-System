@@ -3,7 +3,6 @@
 基于 ImGui + GLFW + OpenGL 3.0 的 3D Gaussian Splatting (3DGS) 图形化工具。
 支持图片导入、渲染管线、JSON 项目管理与 PLY 点云导出。
 
-![3DGS 界面预览](screenshot_control.png)
 
 ## 目录
 
