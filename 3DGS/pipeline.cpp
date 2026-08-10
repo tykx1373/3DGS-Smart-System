@@ -1,5 +1,20 @@
+// pipeline.cpp - 后台线程渲染管线的实现
+//
+// 公共 API 和设计说明见 pipeline.h。
+//
+// 线程安全:
+//   - images 向量在 Start() 中按值复制，避免悬空引用
+//   - m_status 由互斥锁保护 (statusMutex)
+//   - m_progress、m_running、m_finished、m_cancel 为原子变量
+//   - m_result 仅由后台线程写入，UI 在 IsFinished() 返回 true 后读取
+//     （通过原子变量建立 happens-before 关系）
+//
 #include "pipeline.h"
+#include "color_utils.h"
 #include "log_system.h"
+
+// 启用 stb_image 的 Windows UTF-8 路径支持（必须在使用 stbi_load 的编译单元中定义）
+#define STBI_WINDOWS_UTF8
 #include "stb_image.h"
 #include <cmath>
 #include <algorithm>
@@ -30,10 +45,20 @@ bool Pipeline::Start(const std::vector<ImageEntry>& images, const PipelineConfig
     m_progress.store(0.0f);
     m_status = u8"初始化渲染管线...";
 
+    // GPU 类型分派扩展点（当前为空壳，仅记录日志）
+    // TODO: 根据 m_config.gpuType 选择不同的算法路径
+    {
+        const char* gpuNames[] = { u8"高性能独显", u8"低功耗独显", u8"核显" };
+        const char* algoNames[] = { u8"高精度算法", u8"平衡算法", u8"轻量算法" };
+        int gi = (int)m_config.gpuType;
+        LogSystem::Info(std::string(u8"GPU 类型: ") + gpuNames[gi] +
+                        u8" → 使用" + algoNames[gi]);
+    }
+
     LogSystem::Info(u8"启动渲染管线: " + std::to_string(images.size()) + u8" 张图片, 采样步长=" +
                     std::to_string(m_config.sampleStep));
 
-    // Launch background thread (copy images vector for thread safety)
+    // 启动后台线程（按值复制 images 向量以保证线程安全）
     m_thread = std::thread(&Pipeline::Process, this, images);
     return true;
 }
@@ -67,7 +92,7 @@ void Pipeline::Process(std::vector<ImageEntry> images) {
     m_result.imageCount = total;
 
     std::vector<GaussianPoint> allPoints;
-    allPoints.reserve((size_t)total * 1000); // Estimate
+    allPoints.reserve((size_t)total * 1000); // 预估容量
 
     static std::mutex statusMutex;
 
@@ -100,7 +125,8 @@ void Pipeline::Process(std::vector<ImageEntry> images) {
         m_progress.store(progress);
     }
 
-    // Random shuffle so points from different images are interleaved
+    // 随机打乱，使不同图片的点交错分布。
+    // 这有助于 3DGS 查看器渲染更均匀的点分布。
     std::mt19937 rng(42);
     std::shuffle(allPoints.begin(), allPoints.end(), rng);
 
@@ -123,38 +149,29 @@ GaussianPoint Pipeline::MakePoint(float x, float y, float z,
                                    float scale, float opacity) {
     GaussianPoint p{};
 
-    // Position
+    // 位置
     p.x = x;  p.y = y;  p.z = z;
-    // Normal (zero in 3DGS)
+    // 法线（3DGS 中为零）
     p.nx = 0.0f;  p.ny = 0.0f;  p.nz = 0.0f;
 
-    // Convert sRGB to linear, then to SH DC coefficients
-    // SH DC = color * 0.28209479177387814 (C0 SH coefficient)
-    const float SH_C0 = 0.28209479177387814f;
-    auto sRGBToLinear = [](unsigned char c) -> float {
-        float cs = (float)c / 255.0f;
-        if (cs <= 0.04045f) return cs / 12.92f;
-        return std::pow((cs + 0.055f) / 1.055f, 2.4f);
-    };
-    float lr = sRGBToLinear(r);
-    float lg = sRGBToLinear(g);
-    float lb = sRGBToLinear(b);
-    p.f_dc_0 = lr * SH_C0;
-    p.f_dc_1 = lg * SH_C0;
-    p.f_dc_2 = lb * SH_C0;
+    // 使用 ColorUtils 将 sRGB → 线性 → SH DC 系数转换。
+    // SH DC = linear_color * SH_C0  (C0 球谐基函数常量)
+    p.f_dc_0 = ColorUtils::sRGBToSHDC(r);
+    p.f_dc_1 = ColorUtils::sRGBToSHDC(g);
+    p.f_dc_2 = ColorUtils::sRGBToSHDC(b);
 
-    // Zero out higher-order SH
+    // 高阶 SH 置零（真正的 3DGS 优化会填充这些值）
     for (int i = 0; i < 45; ++i) p.f_rest[i] = 0.0f;
 
-    // Opacity (apply sigmoid if stored raw, but we store final value)
+    // 不透明度（若存储原始值则应用 sigmoid，当前存储最终值）
     p.opacity = opacity;
 
-    // Scale (log-space, as 3DGS stores it)
+    // 尺度（log 空间，与 3DGS 存储方式一致）
     p.scale_0 = scale;
     p.scale_1 = scale;
     p.scale_2 = scale;
 
-    // Identity rotation quaternion
+    // 单位旋转四元数
     p.rot_0 = 1.0f;
     p.rot_1 = 0.0f;
     p.rot_2 = 0.0f;
@@ -165,7 +182,7 @@ GaussianPoint Pipeline::MakePoint(float x, float y, float z,
 
 void Pipeline::ProcessImage(const ImageEntry& entry, int imageIndex, int totalImages,
                             std::vector<GaussianPoint>& outPoints) {
-    // Reload image at full resolution (texture is only 512px max)
+    // 以全分辨率重新加载图片（纹理最大只有 512px）
     int w, h, ch;
     unsigned char* data = stbi_load(entry.filePath.c_str(), &w, &h, &ch, 0);
     if (!data) {
@@ -184,22 +201,22 @@ void Pipeline::ProcessImage(const ImageEntry& entry, int imageIndex, int totalIm
     int step = m_config.sampleStep;
     if (step < 1) step = 1;
 
-    float sceneScale = m_config.sceneScale;
-    float spacing    = m_config.pointSpacing;
-    float baseScale  = m_config.baseScale;
+    float sceneScale  = m_config.sceneScale;
+    float spacing     = m_config.pointSpacing;
+    float baseScale   = m_config.baseScale;
     float baseOpacity = m_config.baseOpacity;
 
-    // Center the image around origin in world space
+    // 将图片在世界空间中以原点为中心
     float halfW = (float)w * 0.5f * spacing;
     float halfH = (float)h * 0.5f * spacing;
 
-    // Each image is offset along Z based on its index (creates depth between images)
+    // 每张图片按索引在 Z 轴上偏移（在图片间创建深度）
     float zOffset = ((float)imageIndex - (float)totalImages * 0.5f) * 0.5f;
     zOffset *= sceneScale;
 
     size_t pointsBefore = outPoints.size();
 
-    // Sample pixels and create Gaussian points
+    // 采样像素并创建高斯点
     for (int y = 0; y < h; y += step) {
         for (int x = 0; x < w; x += step) {
             int idx = (y * w + x) * ch;
@@ -207,15 +224,16 @@ void Pipeline::ProcessImage(const ImageEntry& entry, int imageIndex, int totalIm
             unsigned char g = (ch >= 2) ? data[idx + 1] : 128;
             unsigned char b = (ch >= 3) ? data[idx + 2] : 128;
 
-            // Skip near-black pixels (likely background)
+            // 跳过接近黑色的像素（可能是背景）
             if (r + g + b < 30) continue;
 
+            // 将像素坐标映射到世界空间（居中、缩放）
             float wx = ((float)x * spacing - halfW) * sceneScale / (float)std::max(w, h);
             float wy = (halfH - (float)y * spacing) * sceneScale / (float)std::max(w, h);
             float wz = zOffset;
 
-            // Slight per-pixel scale variation for visual interest
-            float lum = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
+            // 根据亮度添加轻微的逐像素尺度变化（增加视觉趣味）
+            float lum = ColorUtils::sRGBLuminance(r, g, b);
             float pointScale = baseScale * (0.5f + lum * 0.5f);
 
             outPoints.push_back(MakePoint(wx, wy, wz, r, g, b, pointScale, baseOpacity));

@@ -1,41 +1,26 @@
+// ui_log_panel.cpp - 日志面板：日志文件信息、统计和打开按钮
+//
+// 显示当前日志文件的信息和本会话统计。
+// "打开日志文件"按钮使用系统默认编辑器打开日志文件。
+//
+// 注意：本面板不接收 AppState；通过 UIScale() / ButtonH() 重载
+// 从当前 ImGui 样式推导字体缩放。
+//
 #include "ui_log_panel.h"
+#include "ui_helpers.h"
+#include "string_utils.h"
 #include "log_system.h"
 #include <imgui.h>
 #include <windows.h>
 #include <shellapi.h>
 #include <filesystem>
 
-// Helper: draw a section card with title (consistent with control panel)
-static void SectionHeader(const char* title) {
-    ImGui::Spacing();
-    ImGui::PushFont(ImGui::GetFont());
-    ImGui::TextColored(ImVec4(0.5f, 0.6f, 0.75f, 1.0f), "%s", title);
-    ImGui::PopFont();
-    ImGui::Separator();
-    ImGui::Spacing();
-}
-
-// Extract filename from full path
-static std::string GetFileName(const std::string& path) {
-    size_t pos = path.find_last_of("\\/");
-    return (pos == std::string::npos) ? path : path.substr(pos + 1);
-}
-
-// Extract directory from full path
-static std::string GetDirectory(const std::string& path) {
-    size_t pos = path.find_last_of("\\/");
-    return (pos == std::string::npos) ? "" : path.substr(0, pos);
-}
-
-// Get log file size in bytes
+// 辅助函数：获取日志文件大小的格式化字符串
 static std::string GetLogFileSizeStr(const std::string& path) {
     if (path.empty()) return u8"未知";
     try {
         if (std::filesystem::exists(path)) {
-            auto size = std::filesystem::file_size(path);
-            if (size < 1024) return std::to_string(size) + u8" B";
-            if (size < 1024 * 1024) return std::to_string(size / 1024) + u8" KB";
-            return std::to_string(size / (1024 * 1024)) + u8" MB";
+            return StringUtils::FormatFileSize(std::filesystem::file_size(path));
         }
     } catch (...) {}
     return u8"未知";
@@ -43,10 +28,11 @@ static std::string GetLogFileSizeStr(const std::string& path) {
 
 void DrawLogPanel() {
     const ImGuiStyle& style = ImGui::GetStyle();
+    float btnH = ButtonH();
 
     std::string logPath = LogSystem::GetLogFilePath();
 
-    // ===== Log File Info Section =====
+    // ===== 日志文件信息区块 =====
     SectionHeader(u8"日志文件");
 
     if (logPath.empty()) {
@@ -54,54 +40,50 @@ void DrawLogPanel() {
         return;
     }
 
-    // Info card with bordered background
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetColorU32(ImGuiCol_FrameBg));
-    ImGui::BeginChild("##LogInfoCard", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-    ImGui::PopStyleColor();
+    // 带边框背景的信息卡片
+    Card("##LogInfoCard", [&]() {
+        // 文件名（突出显示）
+        ImGui::TextDisabled(u8"  文件名");
+        ImGui::PushFont(ImGui::GetFont());
+        ImGui::Text(u8"  %s", StringUtils::GetFileName(logPath).c_str());
+        ImGui::PopFont();
 
-    // File name (prominent)
-    ImGui::TextDisabled(u8"  文件名");
-    ImGui::PushFont(ImGui::GetFont());
-    ImGui::Text(u8"  %s", GetFileName(logPath).c_str());
-    ImGui::PopFont();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+        // 所在目录
+        ImGui::TextDisabled(u8"  所在目录");
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + ImGui::GetContentRegionAvail().x - style.WindowPadding.x);
+        ImGui::TextWrapped(u8"  %s", StringUtils::GetDirectory(logPath).c_str());
+        ImGui::PopTextWrapPos();
 
-    // Directory
-    ImGui::TextDisabled(u8"  所在目录");
-    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + ImGui::GetContentRegionAvail().x - style.WindowPadding.x);
-    ImGui::TextWrapped(u8"  %s", GetDirectory(logPath).c_str());
-    ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+        // 文件大小 + 条目数，两列显示
+        float halfW = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) / 2.0f;
 
-    // File size + entry count in two columns
-    float halfW = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) / 2.0f;
+        ImGui::BeginGroup();
+        ImGui::TextDisabled(u8"  文件大小");
+        ImGui::Text(u8"  %s", GetLogFileSizeStr(logPath).c_str());
+        ImGui::EndGroup();
 
-    ImGui::BeginGroup();
-    ImGui::TextDisabled(u8"  文件大小");
-    ImGui::Text(u8"  %s", GetLogFileSizeStr(logPath).c_str());
-    ImGui::EndGroup();
+        ImGui::SameLine(halfW + style.WindowPadding.x);
 
-    ImGui::SameLine(halfW + style.WindowPadding.x);
+        ImGui::BeginGroup();
+        const auto& entries = LogSystem::GetEntries();
+        ImGui::TextDisabled(u8"  本会话记录");
+        ImGui::Text(u8"  %zu 条", entries.size());
+        ImGui::EndGroup();
+    });
 
-    ImGui::BeginGroup();
-    const auto& entries = LogSystem::GetEntries();
-    ImGui::TextDisabled(u8"  本会话记录");
-    ImGui::Text(u8"  %zu 条", entries.size());
-    ImGui::EndGroup();
-
-    ImGui::EndChild();
-
-    // ===== Action Section =====
+    // ===== 操作区块 =====
     SectionHeader(u8"操作");
 
-    // Open log file button (full width, prominent)
-    if (ImGui::Button(u8"打开日志文件", ImVec2(-1, 44))) {
+    // 打开日志文件按钮（全宽，突出显示）
+    if (ImGui::Button(u8"打开日志文件", ImVec2(-1, btnH))) {
         int len = MultiByteToWideChar(CP_UTF8, 0, logPath.c_str(), (int)logPath.size(), nullptr, 0);
         std::wstring wPath(len, 0);
         MultiByteToWideChar(CP_UTF8, 0, logPath.c_str(), (int)logPath.size(), &wPath[0], len);
@@ -115,11 +97,12 @@ void DrawLogPanel() {
         ImGui::EndTooltip();
     }
 
-    // ===== Session Statistics =====
+    // ===== 本会话统计 =====
+    const auto& entries = LogSystem::GetEntries();
     if (!entries.empty()) {
         SectionHeader(u8"本会话统计");
 
-        // Count by level
+        // 按级别计数
         size_t infoCnt = 0, warnCnt = 0, errCnt = 0;
         for (const auto& e : entries) {
             switch (e.level) {
@@ -129,7 +112,7 @@ void DrawLogPanel() {
             }
         }
 
-        // Three-column stats
+        // 三列统计
         float thirdW = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 2) / 3.0f;
 
         ImGui::BeginGroup();
@@ -152,7 +135,7 @@ void DrawLogPanel() {
         ImGui::EndGroup();
     }
 
-    // ===== Description Section =====
+    // ===== 说明区块 =====
     SectionHeader(u8"说明");
 
     ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + ImGui::GetContentRegionAvail().x - style.WindowPadding.x);

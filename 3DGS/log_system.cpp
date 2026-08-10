@@ -1,3 +1,6 @@
+// log_system.cpp - 线程安全日志系统的实现
+//
+// 公共 API 和设计说明见 log_system.h。
 #include "log_system.h"
 #include <chrono>
 #include <ctime>
@@ -92,15 +95,6 @@ const std::vector<LogEntry>& LogSystem::GetEntries() {
 
 void LogSystem::Clear() {
     s_Entries.clear();
-}
-
-ImVec4 LogSystem::GetLevelColor(LogLevel level) {
-    switch (level) {
-        case LogLevel::Info:    return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);   // White
-        case LogLevel::Warning: return ImVec4(1.0f, 1.0f, 0.2f, 1.0f);   // Yellow
-        case LogLevel::Error:   return ImVec4(1.0f, 0.3f, 0.3f, 1.0f);   // Red
-        default:                return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-    }
 }
 
 std::string LogSystem::GetLogFilePath() {

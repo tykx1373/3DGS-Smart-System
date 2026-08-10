@@ -1,4 +1,9 @@
+// project_io.cpp - 项目文件 I/O 与 PLY 导出的实现
+//
+// 公共 API 和格式规范见 project_io.h。
+//
 #include "project_io.h"
+#include "string_utils.h"
 #include "log_system.h"
 #include <fstream>
 #include <chrono>
@@ -7,6 +12,10 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+
+// ============================================================================
+// 私有 JSON 辅助函数
+// ============================================================================
 
 std::string ProjectIO::JsonEscape(const std::string& raw) {
     std::string result;
@@ -45,15 +54,9 @@ std::string ProjectIO::JsonUnescape(const std::string& raw) {
     return result;
 }
 
-std::string ProjectIO::Trim(const std::string& s) {
-    size_t start = s.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    size_t end = s.find_last_not_of(" \t\r\n");
-    return s.substr(start, end - start + 1);
-}
-
+// 简单的 JSON 字符串提取器：查找 "key" : "value" 并返回 value。
+// 不处理嵌套对象或数组 - 对本项目的扁平 JSON 结构足够。
 std::string ProjectIO::ExtractJsonString(const std::string& json, const std::string& key) {
-    // Simple JSON string extractor: find "key" : "value"
     std::string searchKey = "\"" + key + "\"";
     size_t pos = json.find(searchKey);
     if (pos == std::string::npos) return "";
@@ -70,11 +73,12 @@ std::string ProjectIO::ExtractJsonString(const std::string& json, const std::str
     return JsonUnescape(json.substr(start, end - start));
 }
 
+// ============================================================================
+// 公共工具方法
+// ============================================================================
+
 std::string ProjectIO::FormatFileSize(size_t bytes) {
-    if (bytes < 1024) return std::to_string(bytes) + " B";
-    if (bytes < 1024 * 1024) return std::to_string(bytes / 1024) + " KB";
-    if (bytes < (size_t)1024 * 1024 * 1024) return std::to_string(bytes / (1024 * 1024)) + " MB";
-    return std::to_string(bytes / ((size_t)1024 * 1024 * 1024)) + " GB";
+    return StringUtils::FormatFileSize(static_cast<uint64_t>(bytes));
 }
 
 std::string ProjectIO::GetCurrentTimeISO8601() {
@@ -88,6 +92,10 @@ std::string ProjectIO::GetCurrentTimeISO8601() {
     return oss.str();
 }
 
+// ============================================================================
+// JSON 项目保存/加载
+// ============================================================================
+
 bool ProjectIO::SaveProject(
     const std::string& filePath,
     const ProjectConfig& config,
@@ -99,21 +107,21 @@ bool ProjectIO::SaveProject(
         return false;
     }
 
-    // Calculate total size
+    // 计算总大小用于统计
     size_t totalSize = 0;
     for (const auto& img : images) totalSize += img.fileSize;
 
     ofs << "{\n";
     ofs << "  \"version\": \"1.0\",\n";
 
-    // Project info
+    // 项目信息
     ofs << "  \"project\": {\n";
     ofs << "    \"name\": \"" << JsonEscape(config.projectName) << "\",\n";
     ofs << "    \"created_time\": \"" << config.createdTime << "\",\n";
     ofs << "    \"modified_time\": \"" << config.modifiedTime << "\"\n";
     ofs << "  },\n";
 
-    // Images array
+    // 图片数组
     ofs << "  \"images\": [\n";
     for (size_t i = 0; i < images.size(); i++) {
         const auto& img = images[i];
@@ -128,14 +136,14 @@ bool ProjectIO::SaveProject(
     }
     ofs << "  ],\n";
 
-    // Output config
+    // 输出配置
     ofs << "  \"output\": {\n";
     ofs << "    \"path\": \"" << JsonEscape(config.outputPath) << "\",\n";
     ofs << "    \"ply_path\": \"" << JsonEscape(config.plyOutputPath) << "\",\n";
     ofs << "    \"format\": \"" << JsonEscape(config.outputFormat) << "\"\n";
     ofs << "  },\n";
 
-    // Statistics
+    // 统计信息
     ofs << "  \"statistics\": {\n";
     ofs << "    \"total_images\": " << images.size() << ",\n";
     ofs << "    \"total_file_size\": " << totalSize << ",\n";
@@ -160,13 +168,13 @@ bool ProjectIO::LoadProject(
         return false;
     }
 
-    // Read entire file
+    // 将整个文件读入字符串
     std::stringstream ss;
     ss << ifs.rdbuf();
     std::string json = ss.str();
     ifs.close();
 
-    // Extract project metadata
+    // 提取项目元数据
     config.projectName  = ExtractJsonString(json, "name");
     config.createdTime  = ExtractJsonString(json, "created_time");
     config.modifiedTime = ExtractJsonString(json, "modified_time");
@@ -178,7 +186,7 @@ bool ProjectIO::LoadProject(
         config.projectName = "Loaded Project";
     }
 
-    // Extract all file_path values from images array
+    // 从 images 数组中提取所有 file_path 值
     imageManager.ClearAll();
     size_t searchPos = json.find("\"images\"");
     if (searchPos == std::string::npos) {
@@ -194,7 +202,7 @@ bool ProjectIO::LoadProject(
         return false;
     }
 
-    // Find all "file_path": "..." occurrences within the images array
+    // 在 images 数组中查找所有 "file_path": "..." 出现的位置
     int loadedCount = 0;
     size_t pos = arrayStart;
     while (pos < arrayEnd) {
@@ -202,7 +210,7 @@ bool ProjectIO::LoadProject(
         if (path.empty()) break;
         imageManager.AddImage(path);
         loadedCount++;
-        // Move past this occurrence
+        // 移过本次出现位置
         size_t next = json.find("\"file_path\"", pos);
         if (next == std::string::npos) break;
         pos = next + 11;
@@ -213,6 +221,10 @@ bool ProjectIO::LoadProject(
     return true;
 }
 
+// ============================================================================
+// PLY 导出
+// ============================================================================
+
 bool ProjectIO::SavePly(const std::string& filePath, const RenderResult& result) {
     std::ofstream ofs(filePath, std::ios::binary);
     if (!ofs.is_open()) {
@@ -222,8 +234,8 @@ bool ProjectIO::SavePly(const std::string& filePath, const RenderResult& result)
 
     size_t vertexCount = result.points.size();
 
-    // PLY header - binary_little_endian format
-    // Standard 3DGS PLY: 62 attributes (position, normal, SH, opacity, scale, rotation)
+    // PLY 头部 - binary_little_endian 格式
+    // 标准 3DGS PLY: 62 个属性 (位置、法线、SH、不透明度、尺度、旋转)
     ofs << "ply\n";
     ofs << "format binary_little_endian 1.0\n";
     ofs << "comment 3DGS generated by 3DGS Tool v1.0\n";
@@ -239,7 +251,7 @@ bool ProjectIO::SavePly(const std::string& filePath, const RenderResult& result)
     ofs << "property float f_dc_0\n";
     ofs << "property float f_dc_1\n";
     ofs << "property float f_dc_2\n";
-    // 45 SH rest coefficients
+    // 45 个 SH rest 系数
     for (int i = 0; i < 45; ++i) {
         ofs << "property float f_rest_" << i << "\n";
     }
@@ -253,30 +265,31 @@ bool ProjectIO::SavePly(const std::string& filePath, const RenderResult& result)
     ofs << "property float rot_3\n";
     ofs << "end_header\n";
 
-    // Write binary vertex data
-    // Each GaussianPoint is exactly 62 floats = 248 bytes
+    // 写入二进制顶点数据。
+    // 每个 GaussianPoint 恰好 62 个 float = 248 字节，按 PLY
+    // 属性顺序写入（与结构体字段顺序一致）。
     for (const auto& p : result.points) {
-        // Position (3 floats)
+        // 位置 (3 个 float)
         ofs.write(reinterpret_cast<const char*>(&p.x), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.y), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.z), sizeof(float));
-        // Normal (3 floats)
+        // 法线 (3 个 float)
         ofs.write(reinterpret_cast<const char*>(&p.nx), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.ny), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.nz), sizeof(float));
-        // SH DC (3 floats)
+        // SH DC (3 个 float)
         ofs.write(reinterpret_cast<const char*>(&p.f_dc_0), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.f_dc_1), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.f_dc_2), sizeof(float));
-        // SH rest (45 floats)
+        // SH rest (45 个 float)
         ofs.write(reinterpret_cast<const char*>(p.f_rest), sizeof(float) * 45);
-        // Opacity (1 float)
+        // 不透明度 (1 个 float)
         ofs.write(reinterpret_cast<const char*>(&p.opacity), sizeof(float));
-        // Scale (3 floats)
+        // 尺度 (3 个 float)
         ofs.write(reinterpret_cast<const char*>(&p.scale_0), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.scale_1), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.scale_2), sizeof(float));
-        // Rotation (4 floats)
+        // 旋转 (4 个 float)
         ofs.write(reinterpret_cast<const char*>(&p.rot_0), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.rot_1), sizeof(float));
         ofs.write(reinterpret_cast<const char*>(&p.rot_2), sizeof(float));

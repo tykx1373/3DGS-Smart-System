@@ -1,8 +1,22 @@
+// image_manager.cpp - 图片加载与纹理管理的实现
+//
+// 公共 API 和线程安全说明见 image_manager.h。
+//
+// 缩略图创建流程:
+//   1. 用 stb_image 解码图片（全分辨率）
+//   2. 将最长边缩小到最大 512px（最近邻采样）
+//   3. 转换为 RGBA 格式
+//   4. 上传为 OpenGL 纹理（线性过滤，边缘钳制）
+//
+
+// 启用 stb_image 的 Windows UTF-8 路径支持。
+// 必须在 #include "stb_image.h" 之前定义，否则中文路径无法正确加载。
+#define STBI_WINDOWS_UTF8
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-// Include Windows headers BEFORE OpenGL to avoid APIENTRY conflicts
-// Also undef LoadImage to avoid conflict with ImageManager::LoadImage
+// 在 OpenGL 之前包含 Windows 头文件，以避免 APIENTRY 冲突。
+// 同时取消 LoadImage 宏定义，避免与 ImageManager::LoadImage 冲突。
 #include <windows.h>
 #undef LoadImage
 #include <GL/gl.h>
@@ -14,7 +28,12 @@
 #include "image_manager.h"
 #include "log_system.h"
 
+// 缩略图纹理的最大尺寸（最长边）。
+// 更大的图片会缩小到此尺寸以实现高效的 UI 渲染。
+static constexpr int MAX_THUMBNAIL_SIZE = 512;
+
 void ImageManager::AddImage(const std::string& filePath) {
+    // 去重：如果已导入则跳过
     for (const auto& img : m_Images) {
         if (img.filePath == filePath) {
             LogSystem::Warn(u8"图片已导入: " + filePath);
@@ -24,19 +43,24 @@ void ImageManager::AddImage(const std::string& filePath) {
 
     ImageEntry entry;
     entry.filePath = filePath;
-    entry.fileName = std::filesystem::path(filePath).filename().string();
-    entry.fileExt  = std::filesystem::path(filePath).extension().string();
+    // 使用 u8path 正确处理 UTF-8 编码的路径（中文路径等）
+    auto p = std::filesystem::u8path(filePath);
+    entry.fileName = p.filename().string();
+    entry.fileExt  = p.extension().string();
 
     try {
-        entry.fileSize = std::filesystem::file_size(filePath);
-    } catch (...) {
+        entry.fileSize = std::filesystem::file_size(p);
+    } catch (const std::exception& e) {
+        LogSystem::Warn(u8"无法获取文件大小: " + entry.fileName + " (" + e.what() + ")");
         entry.fileSize = 0;
     }
 
     if (LoadImage(entry)) {
         m_Images.push_back(std::move(entry));
-        LogSystem::Info(u8"已导入: " + entry.fileName +
-            " (" + std::to_string(entry.width) + "x" + std::to_string(entry.height) + ")");
+        LogSystem::Info(u8"已导入: " + m_Images.back().fileName +
+            " (" + std::to_string(m_Images.back().width) + "x" + std::to_string(m_Images.back().height) + ")");
+    } else {
+        LogSystem::Error(u8"图片加载失败: " + entry.fileName);
     }
 }
 
@@ -95,16 +119,15 @@ bool ImageManager::LoadImage(ImageEntry& entry) {
     entry.height   = h;
     entry.channels = ch;
 
-    // Downscale to max 512px on longest side for texture upload
-    const int maxTex = 512;
+    // 将最长边缩小到最大 512px 以便上传纹理
     int texW = w, texH = h;
-    if (w > maxTex || h > maxTex) {
-        float scale = (float)maxTex / (float)(w > h ? w : h);
+    if (w > MAX_THUMBNAIL_SIZE || h > MAX_THUMBNAIL_SIZE) {
+        float scale = (float)MAX_THUMBNAIL_SIZE / (float)(w > h ? w : h);
         texW = (int)(w * scale);
         texH = (int)(h * scale);
     }
 
-    // Nearest-neighbor downscale to RGBA
+    // 最近邻采样缩小到 RGBA
     unsigned char* rgba = (unsigned char*)malloc(texW * texH * 4);
     if (!rgba) {
         stbi_image_free(data);
@@ -128,7 +151,7 @@ bool ImageManager::LoadImage(ImageEntry& entry) {
     }
     stbi_image_free(data);
 
-    // Upload to OpenGL
+    // 上传到 OpenGL
     GLuint texId;
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);

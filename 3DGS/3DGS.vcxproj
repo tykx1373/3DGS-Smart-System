@@ -66,13 +66,13 @@
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>..\glfw\lib-vc2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>comdlg32.lib;shlwapi.lib;glfw3.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>comdlg32.lib;shlwapi.lib;glfw3.lib;opengl32.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
     </Manifest>
     <PostBuildEvent>
-      <Command>xcopy /y /d "$(SolutionDir)glfw\lib-vc2022\glfw3.dll" "$(OutDir)"</Command>
+      <Command>xcopy /y /d "$(ProjectDir)..\glfw\lib-vc2022\glfw3.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -94,13 +94,13 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalLibraryDirectories>..\glfw\lib-vc2022;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>comdlg32.lib;shlwapi.lib;glfw3.lib;opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>comdlg32.lib;shlwapi.lib;glfw3.lib;opengl32.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableSegmentHeap>true</EnableSegmentHeap>
     </Manifest>
     <PostBuildEvent>
-      <Command>xcopy /y /d "$(SolutionDir)glfw\lib-vc2022\glfw3.dll" "$(OutDir)"</Command>
+      <Command>xcopy /y /d "$(ProjectDir)..\glfw\lib-vc2022\glfw3.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
 
@@ -113,6 +113,7 @@
     <ClCompile Include="project_io.cpp" />
     <ClCompile Include="pipeline.cpp" />
     <ClCompile Include="ui_main_window.cpp" />
+    <ClCompile Include="ui_settings.cpp" />
     <ClCompile Include="ui_control_panel.cpp" />
     <ClCompile Include="ui_log_panel.cpp" />
     <ClCompile Include="ui_help_panel.cpp" />
@@ -135,7 +136,12 @@
     <ClInclude Include="pipeline.h" />
     <ClInclude Include="theme.h" />
     <ClInclude Include="stb_image.h" />
+    <ClInclude Include="color_utils.h" />
+    <ClInclude Include="string_utils.h" />
+    <ClInclude Include="gpu_info.h" />
+    <ClInclude Include="ui_helpers.h" />
     <ClInclude Include="ui_main_window.h" />
+    <ClInclude Include="ui_settings.h" />
     <ClInclude Include="ui_control_panel.h" />
     <ClInclude Include="ui_log_panel.h" />
     <ClInclude Include="ui_help_panel.h" />
