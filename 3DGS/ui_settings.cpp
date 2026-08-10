@@ -121,8 +121,6 @@ void DrawSettingsPopup(AppState& state) {
                 if (ImGui::SliderFloat(u8"##FontSize", &state.ui.fontScale, 0.5f, 3.0f, u8"%.2fx")) {
                     ImGui::GetStyle().FontScaleMain = state.ui.fontScale;
                 }
-                SliderWheelFloat(&state.ui.fontScale, 0.5f, 3.0f);
-                ImGui::GetStyle().FontScaleMain = state.ui.fontScale;
                 ImGui::SameLine();
                 if (ImGui::Button(u8"重置")) {
                     state.ui.fontScale = 1.3f;
@@ -151,7 +149,6 @@ void DrawSettingsPopup(AppState& state) {
                 ImGui::TextDisabled(u8"  缩略图大小");
                 ImGui::SetNextItemWidth(-1);
                 ImGui::SliderFloat(u8"##ThumbSize", &state.ui.thumbSize, 64.0f, 192.0f, u8"%.0f px");
-                SliderWheelFloat(&state.ui.thumbSize, 64.0f, 192.0f);
             });
 
             // ===== 操作按钮 =====

@@ -236,6 +236,11 @@ GLFW 的 DLL (`glfw3.dll`) 会在编译时自动复制到输出目录。
 - `/Zc:char8_t-` — 兼容 C++20 u8 字面量与 ImGui API
 - `C++20 (stdcpp20)` — 语言标准
 
+### 后续计划
+
+- **GPU 加速** — 当前渲染在 CPU 上运行，后续计划迁移到 CUDA 或 Vulkan 实现性能提升
+  → 详见 [ROADMAP.md](ROADMAP.md)
+
 ---
 
 ## 许可证

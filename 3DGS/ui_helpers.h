@@ -100,10 +100,12 @@ inline void SectionHeader(const char* title) {
 //
 // id 参数应以 "##" 开头以隐藏可见标签
 // （调用者在 body 内自行绘制标题，如需要）。
+// 添加 NoScrollWithMouse 标志，让卡片不拦截滚轮事件，由父窗口统一处理滚动。
 template <typename Body>
 inline void Card(const char* id, Body body) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetColorU32(ImGuiCol_FrameBg));
-    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY,
+                      ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleColor();
     body();
     ImGui::EndChild();
@@ -113,10 +115,12 @@ inline void Card(const char* id, Body body) {
 // 绘制顶部带强调色标题的卡片。
 // 标题左侧有 4px 强调色竖条，标题下方有半透明细线分隔。
 // 当卡片需要可见标题时使用此变体。
+// 添加 NoScrollWithMouse 标志，让卡片不拦截滚轮事件，由父窗口统一处理滚动。
 template <typename Body>
 inline void CardWithTitle(const char* id, const char* titleText, ImVec4 accentColor, Body body) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetColorU32(ImGuiCol_FrameBg));
-    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY,
+                      ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleColor();
 
     // 左侧强调色竖条
@@ -173,36 +177,4 @@ inline void PushAccentButtonColors(ImVec4 accent) {
         accent.y * 0.82f,
         accent.z * 0.82f,
         1.0f));
-}
-
-// ---- 滑块滚轮辅助 ----------------------------------------------------------
-//
-// 鼠标悬停在滑块上时，滚动滚轮改变数值（而非滚动页面）。
-// Ctrl+滚轮 保留给字体缩放，不在此处理。
-// 调用方式：在 ImGui::SliderInt / SliderFloat 之后紧接着调用。
-//
-
-// 整数滑块滚轮调整。每次滚动步长根据范围自适应。
-inline void SliderWheelInt(int* v, int min, int max) {
-    ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::IsItemHovered() && !io.KeyCtrl && io.MouseWheel != 0.0f) {
-        int range = max - min;
-        int step = (range > 100) ? (range / 50) : 1;
-        *v += (int)(io.MouseWheel * step);
-        if (*v < min) *v = min;
-        if (*v > max) *v = max;
-        io.MouseWheel = 0.0f; // 消耗事件，防止页面同时滚动
-    }
-}
-
-// 浮点滑块滚轮调整。每次滚动约 2% 范围。
-inline void SliderWheelFloat(float* v, float min, float max) {
-    ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::IsItemHovered() && !io.KeyCtrl && io.MouseWheel != 0.0f) {
-        float step = (max - min) * 0.02f;
-        *v += io.MouseWheel * step;
-        if (*v < min) *v = min;
-        if (*v > max) *v = max;
-        io.MouseWheel = 0.0f; // 消耗事件，防止页面同时滚动
-    }
 }

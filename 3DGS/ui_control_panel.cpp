@@ -36,7 +36,6 @@ static void ParamSliderInt(AppState& state, const char* label, int* v, int min, 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(avail - labelW);
     ImGui::SliderInt(fmt, v, min, max);
-    SliderWheelInt(v, min, max);
 }
 
 static void ParamSliderFloat(AppState& state, const char* label, float* v, float min, float max, const char* fmt) {
@@ -48,7 +47,6 @@ static void ParamSliderFloat(AppState& state, const char* label, float* v, float
     ImGui::SameLine();
     ImGui::SetNextItemWidth(avail - labelW);
     ImGui::SliderFloat(fmt, v, min, max, fmt);
-    SliderWheelFloat(v, min, max);
 }
 
 void DrawControlPanel(AppState& state) {
@@ -196,7 +194,7 @@ void DrawControlPanel(AppState& state) {
         if (state.gpuInfo.detected) {
             ImGui::Spacing();
             float fullW = ImGui::GetContentRegionAvail().x;
-            if (ImGui::Button(u8"应用推荐参数", ImVec2(fullW, btnH))) {
+            if (ImGui::Button(u8"应用推荐参数", ImVec2(fullW, btnH * 0.85f))) {
                 state.sampleStep = state.gpuInfo.recSampleStep;
                 state.sceneScale = state.gpuInfo.recSceneScale;
                 state.baseScale  = state.gpuInfo.recBaseScale;
