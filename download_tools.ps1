@@ -464,7 +464,7 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             cmd /c "$mambaExe config --set show_channel_urls yes 2>nul"
 
             Write-Host "Creating vksplat environment from environment.yaml (using $managerName)..."
-            cmd /c "$mambaExe env create -f environment.yaml -y 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
+            cmd /c "$mambaExe env create -f environment.yaml -y --quiet 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
             # Re-find python after env creation
             if ($condaBase) {
                 $p = Join-Path $condaBase "envs\vksplat\python.exe"
