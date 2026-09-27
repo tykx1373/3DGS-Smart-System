@@ -28,13 +28,23 @@ function Get-FastestMirror($githubUrl) {
     $mirrors = @(
         "https://gh-proxy.com/https://github.com",
         "https://github.moeyy.xyz/https://github.com",
-        "https://ghfast.top/https://github.com"
+        "https://ghfast.top/https://github.com",
+        "https://mirror.ghproxy.com/https://github.com",
+        "https://gh.api.99988866.xyz/https://github.com",
+        "https://gcore.jsdelivr.net/gh",
+        "https://cdn.jsdelivr.net/gh"
     )
     $bestUrl = $githubUrl  # fallback to direct
     $bestTime = [int]::MaxValue
 
     foreach ($m in $mirrors) {
-        $testUrl = $githubUrl -replace '^https://github.com', $m
+        # jsdelivr mirrors use a different URL format
+        if ($m -match "jsdelivr") {
+            # https://github.com/user/repo/releases/download/tag/file -> user/repo@tag/file
+            $testUrl = $githubUrl -replace '^https://github.com/([^/]+/[^/]+)/releases/download/([^/]+)/(.+)$', "$m/`$1@`$2/`$3"
+        } else {
+            $testUrl = $githubUrl -replace '^https://github.com', $m
+        }
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $out = & curl.exe -sI -L --ssl-no-revoke --connect-timeout 8 --max-time 15 $testUrl 2>$null
@@ -65,20 +75,39 @@ function Download-File($url, $outPath, $minSize = 1000000) {
         Write-Host "  Using direct URL (no mirror available)"
     }
 
-    # Start curl in background (avoids PowerShell stderr parsing issues)
-    $curlArgs = "-L --ssl-no-revoke --retry 3 --retry-delay 5 -o `"$outPath`" `"$downloadUrl`""
+    # Resume support: if partial file exists, continue from where it stopped
+    $resumeArg = ""
+    if (Test-Path $outPath) {
+        $partialSize = (Get-Item $outPath).Length
+        if ($partialSize -gt 0 -and $partialSize -lt $minSize) {
+            Write-Host "  Resuming from $([math]::Round($partialSize/1MB,1)) MB..."
+            $resumeArg = "-C -"
+        } elseif ($partialSize -ge $minSize) {
+            Write-Host "  [SKIP] File already downloaded completely." -ForegroundColor Yellow
+            return $true
+        }
+    }
+
+    # Start curl with resume support
+    $curlArgs = "-L --ssl-no-revoke --retry 5 --retry-delay 3 --connect-timeout 15 --max-time 1800 $resumeArg -o `"$outPath`" `"$downloadUrl`""
     $proc = Start-Process -FilePath "curl.exe" -ArgumentList $curlArgs -NoNewWindow -PassThru -RedirectStandardError "$outPath.curl.log"
 
     # Show progress by polling file size
     $lastSize = 0
+    $stallCount = 0
     while (-not $proc.HasExited) {
         Start-Sleep -Seconds 3
         if (Test-Path $outPath) {
             $size = (Get-Item $outPath).Length
             $sizeMB = [math]::Round($size / 1MB, 1)
             if ($size -ne $lastSize) {
-                Write-Host "  Progress: $sizeMB MB  `r" -NoNewline
+                $speedMBps = if ($lastSize -gt 0) { [math]::Round(($size - $lastSize) / 1MB / 3, 2) } else { 0 }
+                $speedStr = if ($speedMBps -gt 0) { " ($speedMBps MB/s)" } else { "" }
+                Write-Host "  Progress: $sizeMB MB$speedStr  `r" -NoNewline
                 $lastSize = $size
+                $stallCount = 0
+            } else {
+                $stallCount++
             }
         }
     }
@@ -97,8 +126,12 @@ function Download-File($url, $outPath, $minSize = 1000000) {
     }
 
     if ($exitCode -ne 0) {
-        Write-Host "  [FAIL] Download failed (curl exit code $exitCode)" -ForegroundColor Red
-        Remove-Item $outPath -Force -ErrorAction SilentlyContinue
+        $size = if (Test-Path $outPath) { (Get-Item $outPath).Length } else { 0 }
+        Write-Host "  [FAIL] Download interrupted. $([math]::Round($size/1MB,1)) MB downloaded." -ForegroundColor Red
+        Write-Host "         Re-run this script to resume (supports breakpoint resume)." -ForegroundColor Yellow
+        Write-Host "         Or download manually: $url" -ForegroundColor Yellow
+        Write-Host "         Put the zip in: $outPath" -ForegroundColor Yellow
+        # Keep partial file for resume
         return $false
     }
 
