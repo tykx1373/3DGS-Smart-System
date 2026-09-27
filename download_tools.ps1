@@ -141,9 +141,21 @@ function Extract-Zip($zipPath, $destDir) {
 }
 
 # ----------------------------------------------------------
-# COLMAP (both CUDA and noCUDA versions for all GPU types)
+# COLMAP (choose CUDA or noCUDA based on GPU)
 # ----------------------------------------------------------
 Write-Section "COLMAP"
+
+function Test-NvidiaGpu {
+    try {
+        $result = Get-CimInstance -ClassName Win32_VideoController -ErrorAction Stop | Select-Object -ExpandProperty Name
+        return ($result -match "NVIDIA|GeForce|RTX|GTX")
+    } catch {
+        try {
+            $result = wmic path win32_VideoController get name 2>$null
+            return ($result -match "NVIDIA")
+        } catch { return $false }
+    }
+}
 
 function Install-Colmap($pattern, $targetDirName, $label) {
     $targetDir = Join-Path $toolsDir $targetDirName
@@ -171,7 +183,6 @@ function Install-Colmap($pattern, $targetDirName, $label) {
     if (-not (Extract-Zip $zipPath $toolsDir)) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue; return $false }
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 
-    # Rename extracted dir to expected name
     $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match "colmap" } | Select-Object -First 1
     if ($extracted -and $extracted.FullName -ne $targetDir) {
         if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force }
@@ -192,8 +203,32 @@ $colmapCudaExe = Join-Path $colmapCudaDir "COLMAP.bat"
 $colmapNocudaDir = Join-Path $toolsDir "colmap-x64-windows-nocuda"
 $colmapNocudaExe = Join-Path $colmapNocudaDir "COLMAP.bat"
 
-if (-not (Install-Colmap "windows-cuda\.zip$" "colmap-x64-windows-cuda" "CUDA")) { $failed += "COLMAP-CUDA" }
-if (-not (Install-Colmap "windows-nocuda\.zip$" "colmap-x64-windows-nocuda" "noCUDA")) { $failed += "COLMAP-noCUDA" }
+$hasNvidia = Test-NvidiaGpu
+if ($hasNvidia) {
+    Write-Host "[INFO] NVIDIA GPU detected. CUDA version recommended for faster feature extraction." -ForegroundColor Cyan
+    Write-Host "       Choose COLMAP version to download:"
+    Write-Host "         1. CUDA version  (recommended, ~360 MB, GPU accelerated)"
+    Write-Host "         2. noCUDA version (~200 MB, CPU only, works on all GPUs)"
+    Write-Host "         3. Both"
+    $choice = Read-Host "Enter 1, 2, or 3 (default: 1)"
+    if (-not $choice) { $choice = "1" }
+
+    switch ($choice) {
+        "1" { if (-not (Install-Colmap "windows-cuda\.zip$" "colmap-x64-windows-cuda" "CUDA")) { $failed += "COLMAP-CUDA" } }
+        "2" { if (-not (Install-Colmap "windows-nocuda\.zip$" "colmap-x64-windows-nocuda" "noCUDA")) { $failed += "COLMAP-noCUDA" } }
+        "3" {
+            if (-not (Install-Colmap "windows-cuda\.zip$" "colmap-x64-windows-cuda" "CUDA")) { $failed += "COLMAP-CUDA" }
+            if (-not (Install-Colmap "windows-nocuda\.zip$" "colmap-x64-windows-nocuda" "noCUDA")) { $failed += "COLMAP-noCUDA" }
+        }
+        default {
+            Write-Host "[WARN] Invalid choice, downloading CUDA version." -ForegroundColor Yellow
+            if (-not (Install-Colmap "windows-cuda\.zip$" "colmap-x64-windows-cuda" "CUDA")) { $failed += "COLMAP-CUDA" }
+        }
+    }
+} else {
+    Write-Host "[INFO] No NVIDIA GPU detected. Downloading noCUDA version (compatible with all GPUs)." -ForegroundColor Cyan
+    if (-not (Install-Colmap "windows-nocuda\.zip$" "colmap-x64-windows-nocuda" "noCUDA")) { $failed += "COLMAP-noCUDA" }
+}
 
 # ----------------------------------------------------------
 # VKGS (nvpro-samples/vk_gaussian_splatting)

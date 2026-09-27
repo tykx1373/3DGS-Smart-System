@@ -62,7 +62,9 @@ download_tools.bat
 ```
 
 脚本会：
-- **COLMAP** — 同时下载 CUDA 版和 noCUDA 版（兼容所有显卡），从 GitHub Releases 下载最新 Windows 预编译包，校验文件大小，自动解压整理目录
+- **COLMAP** — 自动检测显卡，智能选择版本：
+  - 有 NVIDIA GPU：提示用户选择 CUDA 版（推荐）/ noCUDA 版 / 两者都装
+  - 无 NVIDIA GPU：直接下载 noCUDA 版（兼容所有显卡）
 - **VKGS** — 从 GitHub Releases 下载最新 Windows 预编译包，自动解压
 - **VkSplat** — 源码已包含在仓库中，自动编译安装（`pip install -e`）
 - 已存在的工具会自动跳过
@@ -71,7 +73,7 @@ download_tools.bat
 
 > 若脚本运行失败（网络问题、GitHub 访问受限等），请参考下方"方式二：手动下载"。
 >
-> GUI 会自动检测显卡类型：NVIDIA GPU 使用 COLMAP CUDA 版（GPU 加速），其他显卡（Intel/AMD 核显等）自动使用 noCUDA 版（纯 CPU，兼容所有显卡）。
+> GUI 也会自动检测显卡类型，选择对应的 COLMAP 版本运行。
 
 ### 方式二：手动下载
 
