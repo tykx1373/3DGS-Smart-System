@@ -29,7 +29,7 @@
 - **一键式管线** — 选照片 → 自动稀疏重建 → 训练 → 打开查看器，全流程 GUI 操作
 - **Vulkan 训练** — 基于 [VkSplat](https://github.com/harry7557558/vksplat)，跨厂商 GPU 加速（NVIDIA / AMD / Intel 核显）
 - **双 COLMAP 版本** — CUDA 版（N 卡加速）与无 CUDA 版（纯 CPU，通用）可切换
-- **实时渲染** — 基于 [VKGS](https://github.com/limacv/vk_gaussian_splatting)，生成的 PLY 可直接预览
+- **实时渲染** — 基于 [VKGS](https://github.com/nvpro-samples/vk_gaussian_splatting)，生成的 PLY 可直接预览
 - **智能 GPU 适配** — 自动检测独显/核显，动态调整高斯数量上限与缓存策略，防止核显 TDR 超时
 - **三档质量预设** — 快速（5000 步）/ 标准（15000 步）/ 高质量（30000 步）
 - **统一输出命名** — PLY 文件带参数标识，如 `vksplat_15000steps_standard.ply`
@@ -51,17 +51,34 @@
 
 ## 依赖下载与安装
 
-项目仓库**不包含**第三方工具二进制（体积过大），需按以下步骤自行下载到 `tools/` 目录。
+项目仓库**不包含**第三方工具二进制（体积过大），需按以下步骤获取到 `tools/` 目录。
 
-> 推荐先装好 [Miniconda](https://docs.conda.io/en/latest/miniconda.html) 和 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)，再依次获取三个工具。
+### 方式一：一键下载脚本（推荐）
 
-### 1. Vulkan SDK（编译 VkSplat 必需）
+运行 `download_tools.bat`，自动从 GitHub Releases 下载 COLMAP 和 VKGS 并解压到 `tools/`：
+
+```batch
+download_tools.bat
+```
+
+脚本会：
+- 自动检测最新版本，下载 Windows 预编译包
+- 校验文件大小（避免下载到错误页面）
+- 自动解压并整理目录结构
+- 已存在的工具会跳过
+- **下载失败时打印手动下载链接**，按提示操作即可
+
+> 若脚本运行失败（网络问题、GitHub 访问受限等），请参考下方"方式二：手动下载"。
+
+### 方式二：手动下载
+
+#### 1. Vulkan SDK（编译 VkSplat 必需）
 
 下载并安装 [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) for Windows。
 
 安装后确认环境变量 `VULKAN_SDK` 指向 SDK 根目录（如 `C:\VulkanSDK\1.3.x.x.x`），VkSplat 的 `setup.py` 会自动查找。
 
-### 2. COLMAP（稀疏重建）
+#### 2. COLMAP（稀疏重建）
 
 提供两个版本，按需下载其一或全部：
 
@@ -80,7 +97,17 @@ tools/
     └── COLMAP.bat
 ```
 
-### 3. VkSplat（Vulkan 训练后端，需编译）
+#### 3. VKGS（实时渲染查看器）
+
+从 [nvpro-samples/vk_gaussian_splatting Releases](https://github.com/nvpro-samples/vk_gaussian_splatting/releases) 下载最新 Windows 版 zip，解压到 `tools/` 下：
+
+```
+tools/
+└── vkgs-2026.x.x-windows-64bits/
+    └── vk_gaussian_splatting.exe
+```
+
+#### 4. VkSplat（Vulkan 训练后端，需编译）
 
 VkSplat 已作为 **Git Submodule** 管理，无需手动 clone。
 
@@ -119,12 +146,6 @@ pip install -e . --no-build-isolation
 > 若 `pip install -e .` 报找不到 Vulkan，请确认 `VULKAN_SDK` 环境变量已设置。
 > 编译成功后可在 Python 中 `import vksplat` 验证。
 
-### 4. VKGS（实时渲染查看器）
-
-下载预编译版本：[vk_gaussian_splatting Releases](https://github.com/limacv/vk_gaussian_splatting/releases)
-
-解压到 `tools/vkgs-2026.2.9-windows-64bits/`，确保存在 `vk_gaussian_splatting.exe`。
-
 最终 `tools/` 目录结构：
 
 ```
@@ -136,7 +157,7 @@ tools/
 │       ├── setup.py
 │       ├── src/
 │       └── shader/
-└── vkgs-2026.2.9-windows-64bits/   # VKGS 查看器
+└── vkgs-2026.x.x-windows-64bits/   # VKGS 查看器
     └── vk_gaussian_splatting.exe
 ```
 
@@ -253,6 +274,6 @@ A: 训练完成后 GUI 会自动用 VKGS 打开；也可手动用 `vk_gaussian_s
 |------|------|--------|
 | [COLMAP](https://github.com/colmap/colmap) | 稀疏重建（SfM/MVS） | BSD-3-Clause |
 | [VkSplat](https://github.com/harry7557558/vksplat) | 3DGS 训练后端（Vulkan） | Apache-2.0 |
-| [VKGS](https://github.com/limacv/vk_gaussian_splatting) | 实时渲染查看器 | MIT |
+| [VKGS](https://github.com/nvpro-samples/vk_gaussian_splatting) | 实时渲染查看器 | MIT |
 
 各第三方工具的源代码请前往其各自仓库获取。

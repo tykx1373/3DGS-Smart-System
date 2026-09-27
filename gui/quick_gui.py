@@ -28,7 +28,19 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "quick_gui_config.json")
 
 # 所有默认路径相对 PROJECT_ROOT 存储
 DEFAULT_COLMAP = os.path.join("tools", "colmap-x64-windows-cuda", "COLMAP.bat")
-DEFAULT_VKGS = os.path.join("tools", "vkgs-2026.2.9-windows-64bits", "vk_gaussian_splatting.exe")
+
+def _find_vkgs_exe():
+    """在 tools/ 下自动查找 vk_gaussian_splatting.exe，
+    兼容不同版本目录名（如 vkgs-2026.2.9-windows-64bits）。"""
+    tools = os.path.join(PROJECT_ROOT, "tools")
+    if not os.path.isdir(tools):
+        return os.path.join("tools", "vk_gaussian_splatting.exe")
+    for root, dirs, files in os.walk(tools):
+        if "vk_gaussian_splatting.exe" in files:
+            return os.path.relpath(os.path.join(root, "vk_gaussian_splatting.exe"), PROJECT_ROOT)
+    return os.path.join("tools", "vk_gaussian_splatting.exe")
+
+DEFAULT_VKGS = _find_vkgs_exe()
 
 # VkSplat 训练环境 Python（动态查找 vksplat conda 环境，找不到回退当前 Python）
 def _find_vksplat_python():
