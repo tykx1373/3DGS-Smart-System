@@ -457,13 +457,14 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             $managerName = if ($mambaExe -match "mamba") { "mamba" } else { "conda" }
 
             # Configure conda-forge mirror (Tsinghua) for faster downloads in China
+            # Use cmd /c to avoid PowerShell NativeCommandError on stderr
             Write-Host "Configuring conda-forge mirror (Tsinghua)..."
-            & $mambaExe config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ 2>$null
-            & $mambaExe config --remove channels defaults 2>$null
-            & $mambaExe config --set show_channel_urls yes 2>$null
+            cmd /c "$mambaExe config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ 2>nul"
+            cmd /c "$mambaExe config --remove channels defaults 2>nul"
+            cmd /c "$mambaExe config --set show_channel_urls yes 2>nul"
 
             Write-Host "Creating vksplat environment from environment.yaml (using $managerName)..."
-            & $mambaExe env create -f "environment.yaml" -y 2>&1 | ForEach-Object { Write-Host "  $_" }
+            cmd /c "$mambaExe env create -f environment.yaml -y 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
             # Re-find python after env creation
             if ($condaBase) {
                 $p = Join-Path $condaBase "envs\vksplat\python.exe"
@@ -484,7 +485,7 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
     if ($condaPython) {
         Write-Host "  Using env python: $condaPython"
         Write-Host "  Installing vksplat (compiles C++ extension, may take a few minutes)..."
-        & $condaPython -m pip install -e $vksplatPy --no-build-isolation 2>&1 | ForEach-Object { Write-Host "  $_" }
+        cmd /c "`"$condaPython`" -m pip install -e `"$vksplatPy`" --no-build-isolation 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[OK] vksplat installed successfully" -ForegroundColor Green
         } else {
