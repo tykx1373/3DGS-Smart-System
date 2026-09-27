@@ -1,6 +1,10 @@
 # Normalize line endings
 * text=auto
 
+# Windows batch files must be CRLF for cmd.exe to parse correctly
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Binary files (do not normalize)
 *.png  binary
 *.jpg  binary
