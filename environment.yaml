@@ -9,9 +9,8 @@ dependencies:
   - wheel>=0.41
   - numpy>=1.24
   - tqdm>=4.65
-  - torchmetrics>=1.0
-  - opencv>=4.8
   - pip:
-      - opencv-python>=4.8
+      - opencv-python-headless>=4.8
+      - torchmetrics>=1.0
       # VkSplat 需要单独编译安装（需要 Vulkan SDK + MSVC）：
       #   pip install -e tools/vksplat/vksplat --no-build-isolation
