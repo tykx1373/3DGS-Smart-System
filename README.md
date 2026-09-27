@@ -244,9 +244,18 @@ GLFW 的 DLL (`glfw3.dll`) 会在编译时自动复制到输出目录。
 
 ## 许可证
 
-本项目采用 MIT 许可证，详见 [LICENSE](LICENSE)。
+本项目采用 **GNU Affero General Public License v3.0 (AGPL-3.0)**，详见 [LICENSE](LICENSE)。
 
-第三方库的许可证：
-- Dear ImGui — MIT License
-- GLFW — zlib License
-- stb_image — MIT License 或 Public Domain
+> **AGPL-3.0 核心要求**：任何使用、修改、分发本项目代码的个人或组织，必须将其衍生作品以 AGPL-3.0 协议开源。即使仅通过网络提供服务（如部署为在线服务），也必须向用户提供完整的源代码。
+
+### 第三方依赖及许可证
+
+本项目依赖以下开源软件，各组件保留其原始许可证：
+
+| 组件 | 用途 | 许可证 |
+|------|------|--------|
+| [COLMAP](https://github.com/colmap/colmap) | 稀疏重建（SfM/MVS） | BSD-3-Clause |
+| [vkSplat](https://github.com/vk-splat/vksplat) | 3DGS 训练后端（Vulkan） | Apache-2.0 |
+| [VKGS](https://github.com/limacv/vk_gaussian_splatting) | 实时渲染查看器 | MIT |
+
+> **说明**：本项目通过**外部进程调用**上述工具（非代码链接），因此本项目代码可独立采用 AGPL-3.0 协议。各第三方工具的源代码请前往其各自仓库获取。

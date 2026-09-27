@@ -425,3 +425,19 @@ imgui/backends/imgui_impl_win32.*
 imgui/backends/vulkan/
 imgui/backends/sdlgpu3/
 imgui/imgui_demo.cpp
+## ==================== 3DGS project ====================
+# Third-party tools & prebuilt binaries
+tools for 3DGS/
+
+# Python GUI
+gui/__pycache__/
+*.pyc
+gui/quick_gui_config.json
+
+# Runtime outputs
+workspaces/
+outputs/
+
+# Sample datasets (large, optional — uncomment to track)
+sample/
+

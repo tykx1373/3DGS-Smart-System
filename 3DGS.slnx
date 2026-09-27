@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="3DGS/3DGS.vcxproj" Id="36edaf24-1614-46cc-8814-feb3838ed6cf" />
-</Solution>
