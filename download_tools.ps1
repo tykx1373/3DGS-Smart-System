@@ -141,44 +141,59 @@ function Extract-Zip($zipPath, $destDir) {
 }
 
 # ----------------------------------------------------------
-# COLMAP
+# COLMAP (both CUDA and noCUDA versions for all GPU types)
 # ----------------------------------------------------------
 Write-Section "COLMAP"
+
+function Install-Colmap($pattern, $targetDirName, $label) {
+    $targetDir = Join-Path $toolsDir $targetDirName
+    $targetExe = Join-Path $targetDir "COLMAP.bat"
+
+    if (Test-Path $targetExe) {
+        Write-Host "[SKIP] COLMAP ($label) already exists: $targetDir" -ForegroundColor Yellow
+        return $true
+    }
+
+    $release = Get-LatestReleaseAssets "colmap/colmap"
+    if (-not $release) { return $false }
+
+    $asset = $release.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
+    if (-not $asset) {
+        Write-Host "[FAIL] $label asset not found (pattern: $pattern)" -ForegroundColor Red
+        return $false
+    }
+
+    $assetMB = [math]::Round($asset.size / 1MB, 1)
+    Write-Host "Found: $($asset.name) ($assetMB MB)"
+    $zipPath = Join-Path $toolsDir $asset.name
+
+    if (-not (Download-File $asset.browser_download_url $zipPath $asset.size)) { return $false }
+    if (-not (Extract-Zip $zipPath $toolsDir)) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue; return $false }
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+
+    # Rename extracted dir to expected name
+    $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match "colmap" } | Select-Object -First 1
+    if ($extracted -and $extracted.FullName -ne $targetDir) {
+        if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force }
+        Rename-Item $extracted.FullName $targetDir
+    }
+
+    if (Test-Path $targetExe) {
+        Write-Host "[OK] COLMAP ($label) installed: $targetDir" -ForegroundColor Green
+        return $true
+    } else {
+        Write-Host "[FAIL] COLMAP.bat not found after extraction" -ForegroundColor Red
+        return $false
+    }
+}
+
 $colmapCudaDir = Join-Path $toolsDir "colmap-x64-windows-cuda"
 $colmapCudaExe = Join-Path $colmapCudaDir "COLMAP.bat"
+$colmapNocudaDir = Join-Path $toolsDir "colmap-x64-windows-nocuda"
+$colmapNocudaExe = Join-Path $colmapNocudaDir "COLMAP.bat"
 
-if (Test-Path $colmapCudaExe) {
-    Write-Host "[SKIP] COLMAP (CUDA) already exists: $colmapCudaDir" -ForegroundColor Yellow
-} else {
-    $release = Get-LatestReleaseAssets "colmap/colmap"
-    if ($release) {
-        $asset = $release.assets | Where-Object { $_.name -match "windows-cuda\.zip$" } | Select-Object -First 1
-        if ($asset) {
-            $assetMB = [math]::Round($asset.size / 1MB, 1)
-            Write-Host "Found: $($asset.name) ($assetMB MB)"
-            $zipPath = Join-Path $toolsDir $asset.name
-            if (Download-File $asset.browser_download_url $zipPath $asset.size) {
-                if (Extract-Zip $zipPath $toolsDir) {
-                    $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match "colmap.*cuda" } | Select-Object -First 1
-                    if ($extracted -and $extracted.FullName -ne $colmapCudaDir) {
-                        if (Test-Path $colmapCudaDir) { Remove-Item $colmapCudaDir -Recurse -Force }
-                        Rename-Item $extracted.FullName $colmapCudaDir
-                    }
-                    if (Test-Path $colmapCudaExe) {
-                        Write-Host "[OK] COLMAP (CUDA) installed" -ForegroundColor Green
-                    } else {
-                        Write-Host "[FAIL] COLMAP.bat not found after extraction" -ForegroundColor Red
-                        $failed += "COLMAP"
-                    }
-                } else { $failed += "COLMAP" }
-                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-            } else { $failed += "COLMAP" }
-        } else {
-            Write-Host "[FAIL] windows-cuda.zip asset not found" -ForegroundColor Red
-            $failed += "COLMAP"
-        }
-    } else { $failed += "COLMAP" }
-}
+if (-not (Install-Colmap "windows-cuda\.zip$" "colmap-x64-windows-cuda" "CUDA")) { $failed += "COLMAP-CUDA" }
+if (-not (Install-Colmap "windows-nocuda\.zip$" "colmap-x64-windows-nocuda" "noCUDA")) { $failed += "COLMAP-noCUDA" }
 
 # ----------------------------------------------------------
 # VKGS (nvpro-samples/vk_gaussian_splatting)
@@ -277,7 +292,8 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
 Write-Host ""
 if ($failed.Count -eq 0) {
     Write-Host "[OK] All tools ready." -ForegroundColor Green
-    Write-Host "     COLMAP: $colmapCudaExe"
+    Write-Host "     COLMAP (CUDA):   $colmapCudaExe"
+    Write-Host "     COLMAP (noCUDA): $colmapNocudaExe"
     $vkgsCheck = Get-ChildItem $toolsDir -Filter "vk_gaussian_splatting.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($vkgsCheck) { Write-Host "     VKGS:   $($vkgsCheck.FullName)" }
     if (Test-Path $vksplatDir) { Write-Host "     VkSplat: $vksplatDir (source + built)" }
@@ -287,10 +303,15 @@ if ($failed.Count -eq 0) {
 } else {
     Write-Host "[FAIL] The following tools failed. Please handle manually:" -ForegroundColor Red
     Write-Host ""
-    if ($failed -contains "COLMAP") {
+    if ($failed -contains "COLMAP-CUDA" -or $failed -contains "COLMAP-noCUDA") {
         Write-Host "  COLMAP: https://github.com/colmap/colmap/releases"
-        Write-Host "           Download COLMAP-x.x.x-windows-cuda.zip, extract to tools/colmap-x64-windows-cuda/"
-        Write-Host "           (No NVIDIA GPU? Download windows-nocuda.zip, extract to tools/colmap-x64-windows-nocuda/)"
+        if ($failed -contains "COLMAP-CUDA") {
+            Write-Host "           CUDA version:  Download COLMAP-x.x.x-windows-cuda.zip -> tools/colmap-x64-windows-cuda/"
+        }
+        if ($failed -contains "COLMAP-noCUDA") {
+            Write-Host "           noCUDA version: Download COLMAP-x.x.x-windows-nocuda.zip -> tools/colmap-x64-windows-nocuda/"
+            Write-Host "           (noCUDA works on all GPUs including Intel/AMD integrated)"
+        }
         Write-Host ""
     }
     if ($failed -contains "VKGS") {

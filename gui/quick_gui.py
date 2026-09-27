@@ -816,6 +816,17 @@ if __name__ == "__main__":
             self._log(f"[WARN] GPU 检测失败，使用默认设备: {e}")
             return -1, False, "unknown"
 
+    def _is_nvidia_gpu(self):
+        """检测是否为 NVIDIA GPU（COLMAP CUDA 版本需要）。"""
+        try:
+            import subprocess as _sp
+            result = _sp.run(["wmic", "path", "win32_VideoController", "get", "name"],
+                             capture_output=True, text=True, timeout=10)
+            names = result.stdout.lower()
+            return ("nvidia" in names)
+        except Exception:
+            return False
+
     def run_vksplat_train(self, ws_dir, img_dir, sparse_zero, output_ply):
         """用 vksplat conda 环境的 Python 跑训练。"""
         vksp_py = self.vksplat_py_var.get().strip() or DEFAULT_VKSPLAT_PY
@@ -958,9 +969,28 @@ if __name__ == "__main__":
     def _run_colmap(self, img_dir, ws_dir):
         """COLMAP SfM 三步走。返回 (colmap_exe, env, sparse_zero) 或 (None, None, None)。"""
         colmap_path = resolve_path(self.colmap_var.get().strip())
+
+        # 自动选择 CUDA / nocuda 版本：非 NVIDIA GPU 用 nocuda，CUDA 版本不存在时回退
+        cuda_path = resolve_path(os.path.join("tools", "colmap-x64-windows-cuda", "COLMAP.bat"))
+        nocuda_path = resolve_path(os.path.join("tools", "colmap-x64-windows-nocuda", "COLMAP.bat"))
+        is_nvidia = self._is_nvidia_gpu()
+
         if not colmap_path or not os.path.exists(colmap_path):
-            self._log("[FAIL] COLMAP 路径未找到。")
-            return None, None, None
+            # 用户选的路径无效，自动选可用的
+            if is_nvidia and os.path.exists(cuda_path):
+                colmap_path = cuda_path
+                self._log("[INFO] 自动选择 COLMAP CUDA 版本。")
+            elif os.path.exists(nocuda_path):
+                colmap_path = nocuda_path
+                self._log("[INFO] 自动选择 COLMAP noCUDA 版本（兼容所有显卡）。")
+            else:
+                self._log("[FAIL] COLMAP 路径未找到，请先运行 download_tools.bat。")
+                return None, None, None
+        else:
+            # 用户选了 CUDA 版本但 GPU 不是 NVIDIA，自动切换
+            if "cuda" in colmap_path.lower() and not is_nvidia and os.path.exists(nocuda_path):
+                colmap_path = nocuda_path
+                self._log("[INFO] 检测到非 NVIDIA GPU，自动切换到 COLMAP noCUDA 版本。")
 
         colmap_exe, colmap_env = self._resolve_colmap(colmap_path)
         if not os.path.exists(colmap_exe):
