@@ -1,6 +1,6 @@
 @echo off
-REM 一键应用 VkSplat 本地修改补丁（旋转矩阵、simple_trainer 等）
-REM 在 clone 主仓库并执行 git submodule update --init 后运行此脚本
+REM Apply VkSplat local modifications patch (rotation matrix, simple_trainer, etc.)
+REM Run this after cloning the repo and git submodule update --init
 
 setlocal
 cd /d "%~dp0"
