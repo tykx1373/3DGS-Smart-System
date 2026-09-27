@@ -44,7 +44,7 @@
 | 操作系统 | Windows 10 / 11 (x64) |
 | GPU | 任意支持 Vulkan 1.3+ 的显卡（独显或核显均可） |
 | 内存 | 8 GB 以上（核显建议 16 GB） |
-| Python | 3.9 ~ 3.12（推荐 [Miniforge](https://github.com/conda-forge/miniforge) 管理环境） |
+| Python | 3.9 ~ 3.12（推荐 [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge) 管理环境） |
 | 编译器 | MSVC v143+（Visual Studio 2022），用于编译 VkSplat 的 pybind11 扩展 |
 
 ---
@@ -122,22 +122,23 @@ tools/
 
 VkSplat 源码已**直接包含在仓库中**（`tools/vksplat/`），包含本地定制修改（旋转矩阵对齐、simple_trainer 调整等），无需 submodule 或 patch。
 
-创建 conda 环境并编译安装（推荐使用 [Miniforge](https://github.com/conda-forge/miniforge)，默认 conda-forge 源，国内镜像更全）：
+使用 [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge)（Miniforge 的 mamba 版）从 `environment.yaml` 创建环境并编译安装：
 
 ```bash
-conda create -n vksplat python=3.10 -y
-conda activate vksplat
+# 从 environment.yaml 创建环境（mamba 比 conda 快 10 倍）
+mamba env create -f environment.yaml
 
-# 安装编译依赖
-pip install pybind11 setuptools wheel numpy opencv-python tqdm torchmetrics
+# 激活环境
+mamba activate vksplat
 
 # 编译安装 VkSplat（需要 Vulkan SDK + MSVC）
-cd "tools/vksplat/vksplat"
-pip install -e . --no-build-isolation
+pip install -e tools/vksplat/vksplat --no-build-isolation
 ```
 
 > 若 `pip install -e .` 报找不到 Vulkan，请确认 `VULKAN_SDK` 环境变量已设置。
 > 编译成功后可在 Python 中 `import vksplat` 验证。
+>
+> 没有 mamba？用 conda 也一样：`conda env create -f environment.yaml`
 
 最终 `tools/` 目录结构：
 

@@ -353,24 +353,42 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
 } else {
     Write-Host "[OK] VkSplat source: $vksplatDir" -ForegroundColor Green
 
-    # Build & install vksplat into vksplat conda env
-    Write-Host "Installing vksplat (compiles C++ extension, may take a few minutes)..."
+    # Find mamba/conda executable (prefer mamba for speed)
+    $mambaExe = $null
+    $condaBaseCandidates = @(
+        "D:\mambaforge", "D:\miniforge3",
+        "$env:USERPROFILE\mambaforge", "$env:USERPROFILE\miniforge3",
+        "$env:USERPROFILE\AppData\Local\miniforge3",
+        "D:\miniconda3-pbe", "D:\miniconda3", "D:\anaconda3",
+        "$env:USERPROFILE\miniconda3", "$env:USERPROFILE\anaconda3",
+        "$env:USERPROFILE\AppData\Local\miniconda3",
+        "$env:USERPROFILE\AppData\Local\anaconda3",
+        "C:\ProgramData\miniforge3", "C:\ProgramData\mambaforge",
+        "C:\ProgramData\miniconda3", "C:\ProgramData\anaconda3"
+    )
+    foreach ($base in $condaBaseCandidates) {
+        $mamba = Join-Path $base "Scripts\mamba.exe"
+        $conda = Join-Path $base "Scripts\conda.exe"
+        if (Test-Path $mamba) { $mambaExe = $mamba; break }
+        elseif (Test-Path $conda) { $mambaExe = $conda; break }
+    }
 
     # Try to find vksplat conda env python
     $condaPython = $null
     $condaCandidates = @(
-        "D:\miniforge3\envs\vksplat\python.exe",
         "D:\mambaforge\envs\vksplat\python.exe",
+        "D:\miniforge3\envs\vksplat\python.exe",
         "D:\miniconda3-pbe\envs\vksplat\python.exe",
         "D:\miniconda3\envs\vksplat\python.exe",
-        "$env:USERPROFILE\miniforge3\envs\vksplat\python.exe",
         "$env:USERPROFILE\mambaforge\envs\vksplat\python.exe",
+        "$env:USERPROFILE\miniforge3\envs\vksplat\python.exe",
         "$env:USERPROFILE\miniconda3\envs\vksplat\python.exe",
         "$env:USERPROFILE\anaconda3\envs\vksplat\python.exe",
         "$env:USERPROFILE\AppData\Local\miniforge3\envs\vksplat\python.exe",
         "$env:USERPROFILE\AppData\Local\miniconda3\envs\vksplat\python.exe",
         "$env:USERPROFILE\AppData\Local\anaconda3\envs\vksplat\python.exe",
         "C:\ProgramData\miniforge3\envs\vksplat\python.exe",
+        "C:\ProgramData\mambaforge\envs\vksplat\python.exe",
         "C:\ProgramData\miniconda3\envs\vksplat\python.exe",
         "C:\ProgramData\anaconda3\envs\vksplat\python.exe"
     )
@@ -378,23 +396,35 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
         if (Test-Path $c) { $condaPython = $c; break }
     }
 
+    # If env doesn't exist, create it from environment.yaml
+    if (-not $condaPython) {
+        if ($mambaExe) {
+            $managerName = if ($mambaExe -match "mamba") { "mamba" } else { "conda" }
+            Write-Host "Creating vksplat environment from environment.yaml (using $managerName)..."
+            & $mambaExe env create -f "environment.yaml" -y 2>&1 | ForEach-Object { Write-Host "  $_" }
+            # Re-find python after env creation
+            foreach ($c in $condaCandidates) {
+                if (Test-Path $c) { $condaPython = $c; break }
+            }
+        } else {
+            Write-Host "[WARN] No conda/mamba found. Install Miniforge first:" -ForegroundColor Yellow
+            Write-Host "       https://github.com/conda-forge/miniforge"
+            $failed += "VkSplat-env"
+        }
+    }
+
     if ($condaPython) {
-        Write-Host "  Using conda env python: $condaPython"
+        Write-Host "  Using env python: $condaPython"
+        Write-Host "  Installing vksplat (compiles C++ extension, may take a few minutes)..."
         & $condaPython -m pip install -e $vksplatPy --no-build-isolation 2>&1 | ForEach-Object { Write-Host "  $_" }
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[OK] vksplat installed successfully" -ForegroundColor Green
         } else {
             Write-Host "[WARN] vksplat install failed. Try manually:" -ForegroundColor Yellow
-            Write-Host "       conda activate vksplat"
+            Write-Host "       mamba activate vksplat"
             Write-Host "       pip install -e tools/vksplat/vksplat --no-build-isolation"
             $failed += "VkSplat-build"
         }
-    } else {
-        Write-Host "[WARN] vksplat conda env not found. Create it first:" -ForegroundColor Yellow
-        Write-Host "       conda create -n vksplat python=3.10 -y"
-        Write-Host "       conda activate vksplat"
-        Write-Host "       pip install pybind11 setuptools wheel numpy opencv-python tqdm torchmetrics"
-        Write-Host "       pip install -e tools/vksplat/vksplat --no-build-isolation"
     }
 }
 
