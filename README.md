@@ -62,15 +62,16 @@ download_tools.bat
 ```
 
 脚本会：
-- **COLMAP / VKGS** — 从 GitHub Releases 下载最新 Windows 预编译包，校验文件大小，自动解压整理目录
-- **VkSplat** — 初始化 Git Submodule 拉取源码，并自动应用本地修改补丁（旋转矩阵对齐等）
+- **COLMAP** — 同时下载 CUDA 版和 noCUDA 版（兼容所有显卡），从 GitHub Releases 下载最新 Windows 预编译包，校验文件大小，自动解压整理目录
+- **VKGS** — 从 GitHub Releases 下载最新 Windows 预编译包，自动解压
+- **VkSplat** — 源码已包含在仓库中，自动编译安装（`pip install -e`）
 - 已存在的工具会自动跳过
 - **任意步骤失败时打印手动下载链接**，按提示操作即可
 - 完成后提示后续 conda 环境创建与 VkSplat 编译命令
 
 > 若脚本运行失败（网络问题、GitHub 访问受限等），请参考下方"方式二：手动下载"。
 >
-> **注意**：脚本需要在 Git 仓库内运行（即通过 `git clone` 获取的项目），否则 VkSplat Submodule 无法初始化。
+> GUI 会自动检测显卡类型：NVIDIA GPU 使用 COLMAP CUDA 版（GPU 加速），其他显卡（Intel/AMD 核显等）自动使用 noCUDA 版（纯 CPU，兼容所有显卡）。
 
 ### 方式二：手动下载
 
