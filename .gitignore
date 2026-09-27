@@ -429,8 +429,15 @@ imgui/imgui_demo.cpp
 # Third-party tools & prebuilt binaries (keep empty dir via .gitkeep)
 tools/*
 !tools/.gitkeep
-# VkSplat 作为 submodule 管理，不忽略
+# VkSplat source is tracked directly (not submodule)
 !tools/vksplat
+# Ignore VkSplat build artifacts
+tools/vksplat/**/*.pyd
+tools/vksplat/**/*.so
+tools/vksplat/**/build/
+tools/vksplat/**/__pycache__/
+tools/vksplat/**/*.egg-info/
+tools/vksplat/**/.pytest_cache/
 
 # Python GUI
 gui/__pycache__/

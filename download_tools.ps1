@@ -219,61 +219,21 @@ if ($vkgsExe) {
 }
 
 # ----------------------------------------------------------
-# VkSplat (Git Submodule)
+# VkSplat (source included in repo, just build & install)
 # ----------------------------------------------------------
 Write-Section "VkSplat"
 $vksplatDir = Join-Path $toolsDir "vksplat"
-$vksplatGit = Join-Path $vksplatDir ".git"
-$patchFile = Join-Path $PSScriptRoot "patches\vksplat-local-modifications.patch"
+$vksplatPy = Join-Path $vksplatDir "vksplat"
 
-if (-not (Test-Path $vksplatGit)) {
-    Write-Host "Initializing VkSplat submodule..."
-    Push-Location $PSScriptRoot
-    try {
-        git submodule update --init --recursive 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[FAIL] git submodule update failed" -ForegroundColor Red
-            $failed += "VkSplat"
-        }
-    } catch {
-        Write-Host "[FAIL] git submodule error: $($_.Exception.Message)" -ForegroundColor Red
-        $failed += "VkSplat"
-    }
-    Pop-Location
-}
-
-if (Test-Path $vksplatGit) {
+if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
+    Write-Host "[FAIL] VkSplat source not found at $vksplatPy" -ForegroundColor Red
+    Write-Host "       Make sure you cloned the repo correctly (source is included)."
+    $failed += "VkSplat"
+} else {
     Write-Host "[OK] VkSplat source: $vksplatDir" -ForegroundColor Green
 
-    # Apply local modifications patch (only if not already applied)
-    if (Test-Path $patchFile) {
-        Push-Location $vksplatDir
-        # Check if there are already local modifications (patch likely applied)
-        $hasChanges = $false
-        git diff --quiet 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { $hasChanges = $true }
-
-        if ($hasChanges) {
-            Write-Host "[SKIP] Patch already applied (local modifications detected)" -ForegroundColor Yellow
-        } else {
-            Write-Host "Applying local modifications patch..."
-            git apply "..\..\patches\vksplat-local-modifications.patch" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "[OK] Patch applied successfully" -ForegroundColor Green
-            } else {
-                Write-Host "[WARN] Patch does not apply cleanly (VkSplat version may have changed)" -ForegroundColor Yellow
-                Write-Host "       You can apply manually: apply_vksplat_patch.bat"
-            }
-        }
-        Pop-Location
-    } else {
-        Write-Host "[WARN] Patch file not found: $patchFile" -ForegroundColor Yellow
-    }
-
     # Build & install vksplat into vksplat conda env
-    Write-Host "Installing vksplat (this compiles C++ extension, may take a few minutes)..."
-    $vksplatPy = Join-Path $vksplatDir "vksplat"
-    $pipCmd = "pip install -e `"$vksplatPy`" --no-build-isolation"
+    Write-Host "Installing vksplat (compiles C++ extension, may take a few minutes)..."
 
     # Try to find vksplat conda env python
     $condaPython = $null
@@ -320,7 +280,7 @@ if ($failed.Count -eq 0) {
     Write-Host "     COLMAP: $colmapCudaExe"
     $vkgsCheck = Get-ChildItem $toolsDir -Filter "vk_gaussian_splatting.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($vkgsCheck) { Write-Host "     VKGS:   $($vkgsCheck.FullName)" }
-    if (Test-Path $vksplatGit) { Write-Host "     VkSplat: $vksplatDir (source + patch + built)" }
+    if (Test-Path $vksplatDir) { Write-Host "     VkSplat: $vksplatDir (source + built)" }
     Write-Host ""
     Write-Host "You can now run: run.bat" -ForegroundColor Cyan
     exit 0
@@ -339,9 +299,8 @@ if ($failed.Count -eq 0) {
         Write-Host ""
     }
     if ($failed -contains "VkSplat") {
-        Write-Host "  VkSplat: Ensure you cloned with --recursive, or run:"
-        Write-Host "           git submodule update --init --recursive"
-        Write-Host "           Then apply patch: apply_vksplat_patch.bat"
+        Write-Host "  VkSplat: Source should be included in the repo at tools/vksplat/"
+        Write-Host "           If missing, re-clone the repository."
         Write-Host ""
     }
     Write-Host "  After extracting to tools/, you do NOT need to re-run this script."
