@@ -44,7 +44,7 @@
 | 操作系统 | Windows 10 / 11 (x64) |
 | GPU | 任意支持 Vulkan 1.3+ 的显卡（独显或核显均可） |
 | 内存 | 8 GB 以上（核显建议 16 GB） |
-| Python | 3.9 ~ 3.12（推荐 Miniconda 管理环境） |
+| Python | 3.9 ~ 3.12（推荐 [Miniforge](https://github.com/conda-forge/miniforge) 管理环境） |
 | 编译器 | MSVC v143+（Visual Studio 2022），用于编译 VkSplat 的 pybind11 扩展 |
 
 ---
@@ -122,7 +122,7 @@ tools/
 
 VkSplat 源码已**直接包含在仓库中**（`tools/vksplat/`），包含本地定制修改（旋转矩阵对齐、simple_trainer 调整等），无需 submodule 或 patch。
 
-创建 conda 环境并编译安装：
+创建 conda 环境并编译安装（推荐使用 [Miniforge](https://github.com/conda-forge/miniforge)，默认 conda-forge 源，国内镜像更全）：
 
 ```bash
 conda create -n vksplat python=3.10 -y
@@ -237,7 +237,7 @@ GUI 内部按以下步骤执行：
 ## 常见问题
 
 **Q: 启动时提示找不到 Python？**
-A: 确保已安装 Miniconda 并创建了 `vksplat` 环境。`run.bat` 会自动搜索常见安装路径，也可手动编辑 `run.bat` 指定 Python 路径。
+A: 确保已安装 Miniforge（或 Miniconda/Anaconda）并创建了 `vksplat` 环境。`run.bat` 会自动搜索常见安装路径，也可手动编辑 `run.bat` 指定 Python 路径。
 
 **Q: VkSplat 编译失败，提示找不到 Vulkan？**
 A: 确认已安装 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)，且环境变量 `VULKAN_SDK` 指向 SDK 根目录。

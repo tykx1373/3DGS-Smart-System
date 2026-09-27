@@ -359,12 +359,18 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
     # Try to find vksplat conda env python
     $condaPython = $null
     $condaCandidates = @(
+        "D:\miniforge3\envs\vksplat\python.exe",
+        "D:\mambaforge\envs\vksplat\python.exe",
         "D:\miniconda3-pbe\envs\vksplat\python.exe",
         "D:\miniconda3\envs\vksplat\python.exe",
+        "$env:USERPROFILE\miniforge3\envs\vksplat\python.exe",
+        "$env:USERPROFILE\mambaforge\envs\vksplat\python.exe",
         "$env:USERPROFILE\miniconda3\envs\vksplat\python.exe",
         "$env:USERPROFILE\anaconda3\envs\vksplat\python.exe",
+        "$env:USERPROFILE\AppData\Local\miniforge3\envs\vksplat\python.exe",
         "$env:USERPROFILE\AppData\Local\miniconda3\envs\vksplat\python.exe",
         "$env:USERPROFILE\AppData\Local\anaconda3\envs\vksplat\python.exe",
+        "C:\ProgramData\miniforge3\envs\vksplat\python.exe",
         "C:\ProgramData\miniconda3\envs\vksplat\python.exe",
         "C:\ProgramData\anaconda3\envs\vksplat\python.exe"
     )
