@@ -134,6 +134,59 @@ if ($vkgsExe) {
 }
 
 # ----------------------------------------------------------
+# VkSplat (Git Submodule)
+# ----------------------------------------------------------
+Write-Section "VkSplat"
+$vksplatDir = Join-Path $toolsDir "vksplat"
+$vksplatGit = Join-Path $vksplatDir ".git"
+$patchFile = Join-Path $PSScriptRoot "patches\vksplat-local-modifications.patch"
+
+if (-not (Test-Path $vksplatGit)) {
+    Write-Host "Initializing VkSplat submodule..."
+    Push-Location $PSScriptRoot
+    try {
+        git submodule update --init --recursive 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[FAIL] git submodule update failed" -ForegroundColor Red
+            $failed += "VkSplat"
+        }
+    } catch {
+        Write-Host "[FAIL] git submodule error: $($_.Exception.Message)" -ForegroundColor Red
+        $failed += "VkSplat"
+    }
+    Pop-Location
+}
+
+if (Test-Path $vksplatGit) {
+    Write-Host "[OK] VkSplat source: $vksplatDir" -ForegroundColor Green
+
+    # Apply local modifications patch (only if not already applied)
+    if (Test-Path $patchFile) {
+        Push-Location $vksplatDir
+        # Check if there are already local modifications (patch likely applied)
+        $hasChanges = $false
+        git diff --quiet 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { $hasChanges = $true }
+
+        if ($hasChanges) {
+            Write-Host "[SKIP] Patch already applied (local modifications detected)" -ForegroundColor Yellow
+        } else {
+            Write-Host "Applying local modifications patch..."
+            git apply "..\..\patches\vksplat-local-modifications.patch" 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[OK] Patch applied successfully" -ForegroundColor Green
+            } else {
+                Write-Host "[WARN] Patch does not apply cleanly (VkSplat version may have changed)" -ForegroundColor Yellow
+                Write-Host "       You can apply manually: apply_vksplat_patch.bat"
+            }
+        }
+        Pop-Location
+    } else {
+        Write-Host "[WARN] Patch file not found: $patchFile" -ForegroundColor Yellow
+    }
+}
+
+# ----------------------------------------------------------
 # Summary
 # ----------------------------------------------------------
 Write-Host ""
@@ -141,18 +194,35 @@ if ($failed.Count -eq 0) {
     Write-Host "[OK] All tools ready." -ForegroundColor Green
     Write-Host "     COLMAP: $colmapCudaExe"
     $vkgsCheck = Get-ChildItem $toolsDir -Filter "vk_gaussian_splatting.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($vkgsCheck) { Write-Host "     VKGS: $($vkgsCheck.FullName)" }
+    if ($vkgsCheck) { Write-Host "     VKGS:   $($vkgsCheck.FullName)" }
+    if (Test-Path $vksplatGit) { Write-Host "     VkSplat: $vksplatDir (source + patch)" }
+    Write-Host ""
+    Write-Host "Next steps:"
+    Write-Host "  1. Create conda env: conda create -n vksplat python=3.10 -y"
+    Write-Host "  2. Activate: conda activate vksplat"
+    Write-Host "  3. Install deps: pip install pybind11 setuptools wheel numpy opencv-python tqdm torchmetrics"
+    Write-Host "  4. Build VkSplat: cd tools/vksplat/vksplat && pip install -e . --no-build-isolation"
     exit 0
 } else {
-    Write-Host "[FAIL] The following tools failed to download. Please download manually:" -ForegroundColor Red
+    Write-Host "[FAIL] The following tools failed. Please handle manually:" -ForegroundColor Red
     Write-Host ""
-    Write-Host "  COLMAP: https://github.com/colmap/colmap/releases"
-    Write-Host "           Download COLMAP-x.x.x-windows-cuda.zip, extract to tools/colmap-x64-windows-cuda/"
-    Write-Host "           (No NVIDIA GPU? Download windows-nocuda.zip, extract to tools/colmap-x64-windows-nocuda/)"
-    Write-Host ""
-    Write-Host "  VKGS:   https://github.com/nvpro-samples/vk_gaussian_splatting/releases"
-    Write-Host "           Download the latest Windows zip, extract to tools/"
-    Write-Host ""
+    if ($failed -contains "COLMAP") {
+        Write-Host "  COLMAP: https://github.com/colmap/colmap/releases"
+        Write-Host "           Download COLMAP-x.x.x-windows-cuda.zip, extract to tools/colmap-x64-windows-cuda/"
+        Write-Host "           (No NVIDIA GPU? Download windows-nocuda.zip, extract to tools/colmap-x64-windows-nocuda/)"
+        Write-Host ""
+    }
+    if ($failed -contains "VKGS") {
+        Write-Host "  VKGS:   https://github.com/nvpro-samples/vk_gaussian_splatting/releases"
+        Write-Host "           Download the latest Windows zip, extract to tools/"
+        Write-Host ""
+    }
+    if ($failed -contains "VkSplat") {
+        Write-Host "  VkSplat: Ensure you cloned with --recursive, or run:"
+        Write-Host "           git submodule update --init --recursive"
+        Write-Host "           Then apply patch: apply_vksplat_patch.bat"
+        Write-Host ""
+    }
     Write-Host "  After extracting to tools/, you do NOT need to re-run this script."
     exit 1
 }

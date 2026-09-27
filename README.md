@@ -55,20 +55,22 @@
 
 ### 方式一：一键下载脚本（推荐）
 
-运行 `download_tools.bat`，自动从 GitHub Releases 下载 COLMAP 和 VKGS 并解压到 `tools/`：
+运行 `download_tools.bat`，自动完成 COLMAP、VKGS、VkSplat 三个工具的获取：
 
 ```batch
 download_tools.bat
 ```
 
 脚本会：
-- 自动检测最新版本，下载 Windows 预编译包
-- 校验文件大小（避免下载到错误页面）
-- 自动解压并整理目录结构
-- 已存在的工具会跳过
-- **下载失败时打印手动下载链接**，按提示操作即可
+- **COLMAP / VKGS** — 从 GitHub Releases 下载最新 Windows 预编译包，校验文件大小，自动解压整理目录
+- **VkSplat** — 初始化 Git Submodule 拉取源码，并自动应用本地修改补丁（旋转矩阵对齐等）
+- 已存在的工具会自动跳过
+- **任意步骤失败时打印手动下载链接**，按提示操作即可
+- 完成后提示后续 conda 环境创建与 VkSplat 编译命令
 
 > 若脚本运行失败（网络问题、GitHub 访问受限等），请参考下方"方式二：手动下载"。
+>
+> **注意**：脚本需要在 Git 仓库内运行（即通过 `git clone` 获取的项目），否则 VkSplat Submodule 无法初始化。
 
 ### 方式二：手动下载
 
