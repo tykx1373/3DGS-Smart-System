@@ -82,10 +82,24 @@ tools/
 
 ### 3. VkSplat（Vulkan 训练后端，需编译）
 
+VkSplat 已作为 **Git Submodule** 管理，无需手动 clone。
+
+克隆主仓库时加 `--recursive` 自动拉取：
+
 ```bash
-# 克隆源码到 tools/
-cd "tools"
-git clone https://github.com/harry7557558/vksplat.git
+git clone --recursive https://github.com/tykx1373/3DGS-Smart-System.git
+```
+
+如果已经 clone 但忘了加 `--recursive`，执行：
+
+```bash
+git submodule update --init --recursive
+```
+
+**应用本地修改补丁**（旋转矩阵对齐、simple_trainer 调整等）：
+
+```batch
+apply_vksplat_patch.bat
 ```
 
 创建 conda 环境并编译安装：

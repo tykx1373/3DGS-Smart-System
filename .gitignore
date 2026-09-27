@@ -429,6 +429,8 @@ imgui/imgui_demo.cpp
 # Third-party tools & prebuilt binaries (keep empty dir via .gitkeep)
 tools/*
 !tools/.gitkeep
+# VkSplat 作为 submodule 管理，不忽略
+!tools/vksplat
 
 # Python GUI
 gui/__pycache__/
