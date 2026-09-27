@@ -426,8 +426,9 @@ imgui/backends/vulkan/
 imgui/backends/sdlgpu3/
 imgui/imgui_demo.cpp
 ## ==================== 3DGS project ====================
-# Third-party tools & prebuilt binaries
-tools for 3DGS/
+# Third-party tools & prebuilt binaries (keep empty dir via .gitkeep)
+tools/*
+!tools/.gitkeep
 
 # Python GUI
 gui/__pycache__/

@@ -27,11 +27,26 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)                # 3DGS
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "quick_gui_config.json")
 
 # 所有默认路径相对 PROJECT_ROOT 存储
-DEFAULT_COLMAP = os.path.join("tools for 3DGS", "colmap-x64-windows-cuda", "COLMAP.bat")
-DEFAULT_VKGS = os.path.join("tools for 3DGS", "vkgs-2026.2.9-windows-64bits", "vk_gaussian_splatting.exe")
+DEFAULT_COLMAP = os.path.join("tools", "colmap-x64-windows-cuda", "COLMAP.bat")
+DEFAULT_VKGS = os.path.join("tools", "vkgs-2026.2.9-windows-64bits", "vk_gaussian_splatting.exe")
 
-# VkSplat 训练环境 Python（vksplat conda 环境，已 pip install vksplat）
-DEFAULT_VKSPLAT_PY = r"D:\miniconda3-pbe\envs\vksplat\python.exe"
+# VkSplat 训练环境 Python（动态查找 vksplat conda 环境，找不到回退当前 Python）
+def _find_vksplat_python():
+    """优先在常见 conda 安装路径下查找 vksplat 环境的 python.exe，
+    找不到则回退到当前运行 GUI 的 Python（要求其已 pip install vksplat）。"""
+    for base in [
+        r"D:\miniconda3-pbe", r"D:\miniconda3", r"D:\anaconda3",
+        os.path.expanduser(r"~\miniconda3"), os.path.expanduser(r"~\anaconda3"),
+        os.path.expanduser(r"~\AppData\Local\miniconda3"),
+        os.path.expanduser(r"~\AppData\Local\anaconda3"),
+        r"C:\ProgramData\miniconda3", r"C:\ProgramData\anaconda3",
+    ]:
+        p = os.path.join(base, "envs", "vksplat", "python.exe")
+        if os.path.exists(p):
+            return p
+    return sys.executable
+
+DEFAULT_VKSPLAT_PY = _find_vksplat_python()
 
 TRAIN_BACKENDS = ["VkSplat"]
 
@@ -746,7 +761,7 @@ class QuickSplatApp:
         所有档位统一使用 MCMCTrainerConfig，效果远优于默认策略。"""
         return f"""# -*- coding: utf-8 -*-
 import os, sys
-sys.path.insert(0, os.path.abspath(r"{os.path.join(PROJECT_ROOT, 'tools for 3DGS', 'vksplat', 'vksplat')}"))
+sys.path.insert(0, os.path.abspath(r"{os.path.join(PROJECT_ROOT, 'tools', 'vksplat', 'vksplat')}"))
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import simple_trainer
@@ -775,12 +790,12 @@ if __name__ == "__main__":
     def _detect_gpu(self, vksp_py):
         """检测 Vulkan 设备，优先独显。返回 (device_id, is_integrated, name)。"""
         detect_script = os.path.join(PROJECT_ROOT, "gui", "detect_gpu.py")
-        spv_dir = os.path.join("tools for 3DGS", "vksplat", "vksplat", "shader", "generated")
+        spv_dir = os.path.join("tools", "vksplat", "vksplat", "shader", "generated")
         try:
             result = subprocess.run(
                 [vksp_py, "-u", detect_script, spv_dir],
                 capture_output=True, text=True, timeout=30,
-                cwd=os.path.join(PROJECT_ROOT, "tools for 3DGS", "vksplat", "vksplat"),
+                cwd=os.path.join(PROJECT_ROOT, "tools", "vksplat", "vksplat"),
             )
             import json
             info = json.loads(result.stdout.strip().splitlines()[-1])
