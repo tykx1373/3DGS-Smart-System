@@ -212,15 +212,41 @@ function Install-Colmap($pattern, $targetDirName, $label) {
     Write-Host "Found: $($asset.name) ($assetMB MB)"
     $zipPath = Join-Path $toolsDir $asset.name
 
-    if (-not (Download-File $asset.browser_download_url $zipPath $asset.size)) { return $false }
-    if (-not (Extract-Zip $zipPath $toolsDir)) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue; return $false }
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    # If user manually placed the zip, use it directly (skip download)
+    if (Test-Path $zipPath) {
+        $existingSize = (Get-Item $zipPath).Length
+        if ($existingSize -ge $asset.size * 0.9) {
+            Write-Host "[SKIP] Zip already exists: $zipPath ($([math]::Round($existingSize/1MB,1)) MB)" -ForegroundColor Yellow
+        } else {
+            Write-Host "[WARN] Existing zip too small ($([math]::Round($existingSize/1MB,1)) MB), re-downloading..." -ForegroundColor Yellow
+            Remove-Item $zipPath -Force
+            if (-not (Download-File $asset.browser_download_url $zipPath $asset.size)) { return $false }
+        }
+    } else {
+        if (-not (Download-File $asset.browser_download_url $zipPath $asset.size)) { return $false }
+    }
 
-    $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match "colmap" } | Select-Object -First 1
+    if (-not (Extract-Zip $zipPath $toolsDir)) {
+        Write-Host "  Keep zip for retry: $zipPath" -ForegroundColor Yellow
+        return $false
+    }
+
+    # Match extracted dir by pattern (cuda/nocuda) to avoid mismatching
+    $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match $pattern } | Select-Object -First 1
+    if (-not $extracted) {
+        # Fallback: match any colmap dir that doesn't match the other version
+        $otherPattern = if ($pattern -match "cuda") { "nocuda" } else { "cuda" }
+        $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match "colmap" -and $_.Name -notmatch $otherPattern } | Select-Object -First 1
+    }
+
     if ($extracted -and $extracted.FullName -ne $targetDir) {
         if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force }
         Rename-Item $extracted.FullName $targetDir
+        Write-Host "  Renamed '$($extracted.Name)' -> '$targetDirName'"
     }
+
+    # Clean up zip after successful extraction
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 
     if (Test-Path $targetExe) {
         Write-Host "[OK] COLMAP ($label) installed: $targetDir" -ForegroundColor Green
@@ -282,17 +308,38 @@ if ($vkgsExe) {
             $assetMB = [math]::Round($asset.size / 1MB, 1)
             Write-Host "Found: $($asset.name) ($assetMB MB)"
             $zipPath = Join-Path $toolsDir $asset.name
-            if (Download-File $asset.browser_download_url $zipPath $asset.size) {
+
+            # Reuse manually placed zip
+            $zipOk = $false
+            if (Test-Path $zipPath) {
+                $existingSize = (Get-Item $zipPath).Length
+                if ($existingSize -ge $asset.size * 0.9) {
+                    Write-Host "[SKIP] Zip already exists: $zipPath ($([math]::Round($existingSize/1MB,1)) MB)" -ForegroundColor Yellow
+                    $zipOk = $true
+                } else {
+                    Write-Host "[WARN] Existing zip too small, re-downloading..." -ForegroundColor Yellow
+                    Remove-Item $zipPath -Force
+                }
+            }
+            if (-not $zipOk) {
+                if (Download-File $asset.browser_download_url $zipPath $asset.size) { $zipOk = $true }
+            }
+
+            if ($zipOk) {
                 if (Extract-Zip $zipPath $toolsDir) {
                     $exe = Get-ChildItem $toolsDir -Filter "vk_gaussian_splatting.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
                     if ($exe) {
                         Write-Host "[OK] VKGS installed: $($exe.FullName)" -ForegroundColor Green
+                        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
                     } else {
                         Write-Host "[FAIL] vk_gaussian_splatting.exe not found after extraction" -ForegroundColor Red
+                        Write-Host "  Keep zip for retry: $zipPath" -ForegroundColor Yellow
                         $failed += "VKGS"
                     }
-                } else { $failed += "VKGS" }
-                Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+                } else {
+                    Write-Host "  Keep zip for retry: $zipPath" -ForegroundColor Yellow
+                    $failed += "VKGS"
+                }
             } else { $failed += "VKGS" }
         } else {
             Write-Host "[FAIL] Windows zip asset not found" -ForegroundColor Red
