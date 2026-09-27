@@ -355,45 +355,100 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
 
     # Find mamba/conda executable (prefer mamba for speed)
     $mambaExe = $null
-    $condaBaseCandidates = @(
-        "D:\mambaforge", "D:\miniforge3",
-        "$env:USERPROFILE\mambaforge", "$env:USERPROFILE\miniforge3",
-        "$env:USERPROFILE\AppData\Local\miniforge3",
-        "D:\miniconda3-pbe", "D:\miniconda3", "D:\anaconda3",
-        "$env:USERPROFILE\miniconda3", "$env:USERPROFILE\anaconda3",
-        "$env:USERPROFILE\AppData\Local\miniconda3",
-        "$env:USERPROFILE\AppData\Local\anaconda3",
-        "C:\ProgramData\miniforge3", "C:\ProgramData\mambaforge",
-        "C:\ProgramData\miniconda3", "C:\ProgramData\anaconda3"
-    )
-    foreach ($base in $condaBaseCandidates) {
-        $mamba = Join-Path $base "Scripts\mamba.exe"
-        $conda = Join-Path $base "Scripts\conda.exe"
-        if (Test-Path $mamba) { $mambaExe = $mamba; break }
-        elseif (Test-Path $conda) { $mambaExe = $conda; break }
+    $condaBase = $null
+
+    # Strategy 1: search PATH (where.exe)
+    foreach ($cmd in @("mamba", "conda")) {
+        $found = & where.exe $cmd 2>$null | Select-Object -First 1
+        if ($found) {
+            $mambaExe = $found
+            $condaBase = Split-Path (Split-Path $found -Parent) -Parent
+            break
+        }
+    }
+
+    # Strategy 2: search registry (conda writes install path to registry)
+    if (-not $mambaExe) {
+        $regPaths = @(
+            "HKCU:\Software\Python\ContinuumAnalytics",
+            "HKLM:\Software\Python\ContinuumAnalytics",
+            "HKCU:\Software\Python\Conda",
+            "HKLM:\Software\Python\Conda"
+        )
+        foreach ($rp in $regPaths) {
+            if (Test-Path $rp) {
+                Get-ChildItem $rp -ErrorAction SilentlyContinue | ForEach-Object {
+                    $installPath = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).InstallPath
+                    if ($installPath -and (Test-Path (Join-Path $installPath "Scripts\mamba.exe"))) {
+                        $mambaExe = Join-Path $installPath "Scripts\mamba.exe"
+                        $condaBase = $installPath
+                    } elseif ($installPath -and (Test-Path (Join-Path $installPath "Scripts\conda.exe"))) {
+                        $mambaExe = Join-Path $installPath "Scripts\conda.exe"
+                        $condaBase = $installPath
+                    }
+                }
+                if ($mambaExe) { break }
+            }
+        }
+    }
+
+    # Strategy 3: common install paths
+    if (-not $mambaExe) {
+        $condaBaseCandidates = @(
+            "C:\mambaforge", "C:\miniforge3", "C:\miniconda3", "C:\anaconda3",
+            "D:\mambaforge", "D:\miniforge3", "D:\miniconda3-pbe", "D:\miniconda3", "D:\anaconda3",
+            "$env:USERPROFILE\mambaforge", "$env:USERPROFILE\miniforge3",
+            "$env:USERPROFILE\miniconda3", "$env:USERPROFILE\anaconda3",
+            "$env:USERPROFILE\AppData\Local\mambaforge",
+            "$env:USERPROFILE\AppData\Local\miniforge3",
+            "$env:USERPROFILE\AppData\Local\miniconda3",
+            "$env:USERPROFILE\AppData\Local\anaconda3",
+            "C:\ProgramData\mambaforge", "C:\ProgramData\miniforge3",
+            "C:\ProgramData\miniconda3", "C:\ProgramData\anaconda3"
+        )
+        foreach ($base in $condaBaseCandidates) {
+            $mamba = Join-Path $base "Scripts\mamba.exe"
+            $conda = Join-Path $base "Scripts\conda.exe"
+            if (Test-Path $mamba) { $mambaExe = $mamba; $condaBase = $base; break }
+            elseif (Test-Path $conda) { $mambaExe = $conda; $condaBase = $base; break }
+        }
     }
 
     # Try to find vksplat conda env python
     $condaPython = $null
-    $condaCandidates = @(
-        "D:\mambaforge\envs\vksplat\python.exe",
-        "D:\miniforge3\envs\vksplat\python.exe",
-        "D:\miniconda3-pbe\envs\vksplat\python.exe",
-        "D:\miniconda3\envs\vksplat\python.exe",
-        "$env:USERPROFILE\mambaforge\envs\vksplat\python.exe",
-        "$env:USERPROFILE\miniforge3\envs\vksplat\python.exe",
-        "$env:USERPROFILE\miniconda3\envs\vksplat\python.exe",
-        "$env:USERPROFILE\anaconda3\envs\vksplat\python.exe",
-        "$env:USERPROFILE\AppData\Local\miniforge3\envs\vksplat\python.exe",
-        "$env:USERPROFILE\AppData\Local\miniconda3\envs\vksplat\python.exe",
-        "$env:USERPROFILE\AppData\Local\anaconda3\envs\vksplat\python.exe",
-        "C:\ProgramData\miniforge3\envs\vksplat\python.exe",
-        "C:\ProgramData\mambaforge\envs\vksplat\python.exe",
-        "C:\ProgramData\miniconda3\envs\vksplat\python.exe",
-        "C:\ProgramData\anaconda3\envs\vksplat\python.exe"
-    )
-    foreach ($c in $condaCandidates) {
-        if (Test-Path $c) { $condaPython = $c; break }
+    # First, use the detected conda base path
+    if ($condaBase) {
+        $p = Join-Path $condaBase "envs\vksplat\python.exe"
+        if (Test-Path $p) { $condaPython = $p }
+    }
+    # Fallback: common paths
+    if (-not $condaPython) {
+        $condaCandidates = @(
+            "C:\mambaforge\envs\vksplat\python.exe",
+            "C:\miniforge3\envs\vksplat\python.exe",
+            "C:\miniconda3\envs\vksplat\python.exe",
+            "C:\anaconda3\envs\vksplat\python.exe",
+            "D:\mambaforge\envs\vksplat\python.exe",
+            "D:\miniforge3\envs\vksplat\python.exe",
+            "D:\miniconda3-pbe\envs\vksplat\python.exe",
+            "D:\miniconda3\envs\vksplat\python.exe",
+            "D:\anaconda3\envs\vksplat\python.exe",
+            "$env:USERPROFILE\mambaforge\envs\vksplat\python.exe",
+            "$env:USERPROFILE\miniforge3\envs\vksplat\python.exe",
+            "$env:USERPROFILE\miniconda3\envs\vksplat\python.exe",
+            "$env:USERPROFILE\anaconda3\envs\vksplat\python.exe",
+            "$env:USERPROFILE\AppData\Local\mambaforge\envs\vksplat\python.exe",
+            "$env:USERPROFILE\AppData\Local\miniforge3\envs\vksplat\python.exe",
+            "$env:USERPROFILE\AppData\Local\miniconda3\envs\vksplat\python.exe",
+            "$env:USERPROFILE\AppData\Local\anaconda3\envs\vksplat\python.exe",
+            "C:\ProgramData\mambaforge\envs\vksplat\python.exe",
+            "C:\ProgramData\miniforge3\envs\vksplat\python.exe",
+            "C:\ProgramData\miniconda3\envs\vksplat\python.exe",
+            "C:\ProgramData\anaconda3\envs\vksplat\python.exe"
+        )
+        foreach ($c in $condaCandidates) {
+            if (Test-Path $c) { $condaPython = $c; break }
+        }
     }
 
     # If env doesn't exist, create it from environment.yaml
