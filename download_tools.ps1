@@ -357,12 +357,12 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
     $mambaExe = $null
     $condaBase = $null
 
-    # Strategy 1: search PATH (where.exe)
+    # Strategy 1: search PATH (Get-Command, no NativeCommandError noise)
     foreach ($cmd in @("mamba", "conda")) {
-        $found = & where.exe $cmd 2>$null | Select-Object -First 1
+        $found = Get-Command $cmd -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($found) {
-            $mambaExe = $found
-            $condaBase = Split-Path (Split-Path $found -Parent) -Parent
+            $mambaExe = $found.Source
+            $condaBase = Split-Path (Split-Path $found.Source -Parent) -Parent
             break
         }
     }
