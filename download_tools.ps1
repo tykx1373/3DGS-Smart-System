@@ -455,11 +455,24 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
     if (-not $condaPython) {
         if ($mambaExe) {
             $managerName = if ($mambaExe -match "mamba") { "mamba" } else { "conda" }
+
+            # Configure conda-forge mirror (Tsinghua) for faster downloads in China
+            Write-Host "Configuring conda-forge mirror (Tsinghua)..."
+            & $mambaExe config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ 2>$null
+            & $mambaExe config --remove channels defaults 2>$null
+            & $mambaExe config --set show_channel_urls yes 2>$null
+
             Write-Host "Creating vksplat environment from environment.yaml (using $managerName)..."
             & $mambaExe env create -f "environment.yaml" -y 2>&1 | ForEach-Object { Write-Host "  $_" }
             # Re-find python after env creation
-            foreach ($c in $condaCandidates) {
-                if (Test-Path $c) { $condaPython = $c; break }
+            if ($condaBase) {
+                $p = Join-Path $condaBase "envs\vksplat\python.exe"
+                if (Test-Path $p) { $condaPython = $p }
+            }
+            if (-not $condaPython) {
+                foreach ($c in $condaCandidates) {
+                    if (Test-Path $c) { $condaPython = $c; break }
+                }
             }
         } else {
             Write-Host "[WARN] No conda/mamba found. Install Miniforge first:" -ForegroundColor Yellow
