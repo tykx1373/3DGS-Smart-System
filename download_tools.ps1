@@ -184,6 +184,46 @@ if (Test-Path $vksplatGit) {
     } else {
         Write-Host "[WARN] Patch file not found: $patchFile" -ForegroundColor Yellow
     }
+
+    # Build & install vksplat into vksplat conda env
+    Write-Host "Installing vksplat (this compiles C++ extension, may take a few minutes)..."
+    $vksplatPy = Join-Path $vksplatDir "vksplat"
+    $pipCmd = "pip install -e `"$vksplatPy`" --no-build-isolation"
+
+    # Try to find vksplat conda env python
+    $condaPython = $null
+    $condaCandidates = @(
+        "D:\miniconda3-pbe\envs\vksplat\python.exe",
+        "D:\miniconda3\envs\vksplat\python.exe",
+        "$env:USERPROFILE\miniconda3\envs\vksplat\python.exe",
+        "$env:USERPROFILE\anaconda3\envs\vksplat\python.exe",
+        "$env:USERPROFILE\AppData\Local\miniconda3\envs\vksplat\python.exe",
+        "$env:USERPROFILE\AppData\Local\anaconda3\envs\vksplat\python.exe",
+        "C:\ProgramData\miniconda3\envs\vksplat\python.exe",
+        "C:\ProgramData\anaconda3\envs\vksplat\python.exe"
+    )
+    foreach ($c in $condaCandidates) {
+        if (Test-Path $c) { $condaPython = $c; break }
+    }
+
+    if ($condaPython) {
+        Write-Host "  Using conda env python: $condaPython"
+        & $condaPython -m pip install -e $vksplatPy --no-build-isolation 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[OK] vksplat installed successfully" -ForegroundColor Green
+        } else {
+            Write-Host "[WARN] vksplat install failed. Try manually:" -ForegroundColor Yellow
+            Write-Host "       conda activate vksplat"
+            Write-Host "       pip install -e tools/vksplat/vksplat --no-build-isolation"
+            $failed += "VkSplat-build"
+        }
+    } else {
+        Write-Host "[WARN] vksplat conda env not found. Create it first:" -ForegroundColor Yellow
+        Write-Host "       conda create -n vksplat python=3.10 -y"
+        Write-Host "       conda activate vksplat"
+        Write-Host "       pip install pybind11 setuptools wheel numpy opencv-python tqdm torchmetrics"
+        Write-Host "       pip install -e tools/vksplat/vksplat --no-build-isolation"
+    }
 }
 
 # ----------------------------------------------------------
@@ -195,13 +235,9 @@ if ($failed.Count -eq 0) {
     Write-Host "     COLMAP: $colmapCudaExe"
     $vkgsCheck = Get-ChildItem $toolsDir -Filter "vk_gaussian_splatting.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($vkgsCheck) { Write-Host "     VKGS:   $($vkgsCheck.FullName)" }
-    if (Test-Path $vksplatGit) { Write-Host "     VkSplat: $vksplatDir (source + patch)" }
+    if (Test-Path $vksplatGit) { Write-Host "     VkSplat: $vksplatDir (source + patch + built)" }
     Write-Host ""
-    Write-Host "Next steps:"
-    Write-Host "  1. Create conda env: conda create -n vksplat python=3.10 -y"
-    Write-Host "  2. Activate: conda activate vksplat"
-    Write-Host "  3. Install deps: pip install pybind11 setuptools wheel numpy opencv-python tqdm torchmetrics"
-    Write-Host "  4. Build VkSplat: cd tools/vksplat/vksplat && pip install -e . --no-build-isolation"
+    Write-Host "You can now run: run.bat" -ForegroundColor Cyan
     exit 0
 } else {
     Write-Host "[FAIL] The following tools failed. Please handle manually:" -ForegroundColor Red
