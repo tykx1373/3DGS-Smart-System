@@ -51,7 +51,7 @@
 
 ## 依赖下载与安装
 
-项目仓库**不包含**第三方工具二进制（体积过大），需按以下步骤自行下载到 `tools for 3DGS/` 目录。
+项目仓库**不包含**第三方工具二进制（体积过大），需按以下步骤自行下载到 `tools/` 目录。
 
 > 推荐先装好 [Miniconda](https://docs.conda.io/en/latest/miniconda.html) 和 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)，再依次获取三个工具。
 
@@ -70,10 +70,10 @@
 | `colmap-x64-windows-cuda` | 有 NVIDIA 显卡，GPU 加速特征提取 | [COLMAP Releases](https://github.com/colmap/colmap/releases)（选 `COLMAP-x.x.x-windows-cuda.zip`） |
 | `colmap-x64-windows-nocuda` | 无 NVIDIA 显卡或不想装 CUDA | 同上（选 `COLMAP-x.x.x-windows-nocuda.zip`） |
 
-下载后解压到 `tools for 3DGS/`，目录结构应为：
+下载后解压到 `tools/`，目录结构应为：
 
 ```
-tools for 3DGS/
+tools/
 ├── colmap-x64-windows-cuda/
 │   └── COLMAP.bat
 └── colmap-x64-windows-nocuda/
@@ -83,8 +83,8 @@ tools for 3DGS/
 ### 3. VkSplat（Vulkan 训练后端，需编译）
 
 ```bash
-# 克隆源码到 tools for 3DGS/
-cd "tools for 3DGS"
+# 克隆源码到 tools/
+cd "tools"
 git clone https://github.com/harry7557558/vksplat.git
 ```
 
@@ -98,7 +98,7 @@ conda activate vksplat
 pip install pybind11 setuptools wheel numpy opencv-python tqdm torchmetrics
 
 # 编译安装 VkSplat（需要 Vulkan SDK + MSVC）
-cd "tools for 3DGS/vksplat/vksplat"
+cd "tools/vksplat/vksplat"
 pip install -e . --no-build-isolation
 ```
 
@@ -109,12 +109,12 @@ pip install -e . --no-build-isolation
 
 下载预编译版本：[vk_gaussian_splatting Releases](https://github.com/limacv/vk_gaussian_splatting/releases)
 
-解压到 `tools for 3DGS/vkgs-2026.2.9-windows-64bits/`，确保存在 `vk_gaussian_splatting.exe`。
+解压到 `tools/vkgs-2026.2.9-windows-64bits/`，确保存在 `vk_gaussian_splatting.exe`。
 
-最终 `tools for 3DGS/` 目录结构：
+最终 `tools/` 目录结构：
 
 ```
-tools for 3DGS/
+tools/
 ├── colmap-x64-windows-cuda/        # COLMAP CUDA 版
 ├── colmap-x64-windows-nocuda/      # COLMAP 无 CUDA 版
 ├── vksplat/                        # VkSplat 源码（已 pip install -e）
@@ -164,7 +164,7 @@ python gui/quick_gui.py
 ├── docs/
 │   ├── 基于Vulkan的轻量化三维高斯重建与实时渲染系统项目计划书.md
 │   └── 日志术语对照表.md
-├── tools for 3DGS/             # 第三方工具（需自行下载，见上）
+├── tools/             # 第三方工具（需自行下载，见上）
 │   ├── colmap-x64-windows-cuda/
 │   ├── colmap-x64-windows-nocuda/
 │   ├── vksplat/
