@@ -23,8 +23,8 @@ function Get-LatestReleaseAssets($repo) {
     }
 }
 
-function Get-FastestMirror($githubUrl) {
-    # Test multiple GitHub mirrors by actually downloading first 5MB, return the fastest
+function Get-MirrorUrls($githubUrl) {
+    # Return list of mirror URLs to try in order (direct + mirrors)
     $mirrors = @(
         "https://gh-proxy.com/https://github.com",
         "https://github.moeyy.xyz/https://github.com",
@@ -34,138 +34,112 @@ function Get-FastestMirror($githubUrl) {
         "https://gcore.jsdelivr.net/gh",
         "https://cdn.jsdelivr.net/gh"
     )
-    $bestUrl = $githubUrl  # fallback to direct
-    $bestSpeed = 0  # bytes per second
-    $testRange = 5MB  # download first 5MB to test speed
-
-    Write-Host "  Testing mirror download speeds (5MB each)..."
-
+    $urls = @()
+    # Try mirrors first (faster in China), direct URL as last resort
     foreach ($m in $mirrors) {
-        # jsdelivr mirrors use a different URL format
         if ($m -match "jsdelivr") {
             $testUrl = $githubUrl -replace '^https://github.com/([^/]+/[^/]+)/releases/download/([^/]+)/(.+)$', "$m/`$1@`$2/`$3"
         } else {
             $testUrl = $githubUrl -replace '^https://github.com', $m
         }
-
-        $tmpFile = Join-Path $env:TEMP "mirror_test_$([guid]::NewGuid().ToString('N')).bin"
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        try {
-            & curl.exe -s -L --ssl-no-revoke --connect-timeout 8 --max-time 20 --range 0-$($testRange - 1) -o $tmpFile $testUrl 2>$null
-            $sw.Stop()
-            if (Test-Path $tmpFile) {
-                $size = (Get-Item $tmpFile).Length
-                Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
-                if ($size -gt 1MB -and $sw.ElapsedMilliseconds -gt 0) {
-                    $speed = $size / $sw.Elapsed.TotalSeconds  # bytes/sec
-                    $speedMBps = [math]::Round($speed / 1MB, 2)
-                    Write-Host "    $m : $speedMBps MB/s"
-                    if ($speed -gt $bestSpeed) {
-                        $bestSpeed = $speed
-                        $bestUrl = $testUrl
-                    }
-                }
-            }
-        } catch {
-            Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
-        }
+        $urls += $testUrl
     }
-
-    if ($bestSpeed -gt 0) {
-        Write-Host "  Best mirror: $([math]::Round($bestSpeed/1MB,2)) MB/s" -ForegroundColor Green
-    } else {
-        Write-Host "  No mirror available, using direct URL" -ForegroundColor Yellow
-    }
-    return $bestUrl
+    $urls += $githubUrl  # direct URL as fallback
+    return $urls
 }
 
 function Download-File($url, $outPath, $minSize = 1000000) {
     Write-Host "  Downloading: $url"
     Write-Host "  Save to: $outPath"
 
-    # Auto-select fastest mirror (or direct URL)
-    Write-Host "  Selecting fastest mirror..."
-    $downloadUrl = Get-FastestMirror $url
-    if ($downloadUrl -ne $url) {
-        Write-Host "  Using mirror: $downloadUrl"
-    } else {
-        Write-Host "  Using direct URL (no mirror available)"
-    }
-
-    # Resume support: if partial file exists, continue from where it stopped
-    $resumeArg = ""
+    # If already complete, skip
     if (Test-Path $outPath) {
-        $partialSize = (Get-Item $outPath).Length
-        if ($partialSize -gt 0 -and $partialSize -lt $minSize) {
-            Write-Host "  Resuming from $([math]::Round($partialSize/1MB,1)) MB..."
-            $resumeArg = "-C -"
-        } elseif ($partialSize -ge $minSize) {
+        $existingSize = (Get-Item $outPath).Length
+        if ($existingSize -ge $minSize) {
             Write-Host "  [SKIP] File already downloaded completely." -ForegroundColor Yellow
             return $true
         }
     }
 
-    # Start curl with resume support
-    $curlArgs = "-L --ssl-no-revoke --retry 5 --retry-delay 3 --connect-timeout 15 --max-time 1800 $resumeArg -o `"$outPath`" `"$downloadUrl`""
-    $proc = Start-Process -FilePath "curl.exe" -ArgumentList $curlArgs -NoNewWindow -PassThru -RedirectStandardError "$outPath.curl.log"
+    $mirrorUrls = Get-MirrorUrls $url
+    Write-Host "  Trying $($mirrorUrls.Count) sources (mirrors + direct)..."
 
-    # Show progress by polling file size
-    $lastSize = 0
-    $stallCount = 0
-    while (-not $proc.HasExited) {
-        Start-Sleep -Seconds 3
+    foreach ($downloadUrl in $mirrorUrls) {
+        $label = if ($downloadUrl -eq $url) { "direct" } else { ($downloadUrl -split '/')[2] }
+        Write-Host "  Trying: $label"
+
+        # Resume support
+        $resumeArg = ""
         if (Test-Path $outPath) {
-            $size = (Get-Item $outPath).Length
-            $sizeMB = [math]::Round($size / 1MB, 1)
-            if ($size -ne $lastSize) {
-                $speedMBps = if ($lastSize -gt 0) { [math]::Round(($size - $lastSize) / 1MB / 3, 2) } else { 0 }
-                $speedStr = if ($speedMBps -gt 0) { " ($speedMBps MB/s)" } else { "" }
-                Write-Host "  Progress: $sizeMB MB$speedStr  `r" -NoNewline
-                $lastSize = $size
-                $stallCount = 0
-            } else {
-                $stallCount++
+            $partialSize = (Get-Item $outPath).Length
+            if ($partialSize -gt 0 -and $partialSize -lt $minSize) {
+                Write-Host "    Resuming from $([math]::Round($partialSize/1MB,1)) MB..."
+                $resumeArg = "-C -"
             }
         }
+
+        $curlArgs = "-L --ssl-no-revoke --connect-timeout 10 --max-time 1800 $resumeArg -o `"$outPath`" `"$downloadUrl`""
+        $proc = Start-Process -FilePath "curl.exe" -ArgumentList $curlArgs -NoNewWindow -PassThru -RedirectStandardError "$outPath.curl.log"
+
+        # Monitor speed - kill and switch if too slow
+        $lastSize = 0
+        $slowCount = 0
+        $startTime = Get-Date
+        while (-not $proc.HasExited) {
+            Start-Sleep -Seconds 5
+            if (Test-Path $outPath) {
+                $size = (Get-Item $outPath).Length
+                $sizeMB = [math]::Round($size / 1MB, 1)
+                $delta = $size - $lastSize
+                $speedMBps = [math]::Round($delta / 1MB / 5, 2)
+                $speedStr = if ($speedMBps -gt 0) { " ($speedMBps MB/s)" } else { "" }
+                Write-Host "    Progress: $sizeMB MB$speedStr  `r" -NoNewline
+                $lastSize = $size
+
+                # If downloaded less than 2MB in last 5s (after 15s warmup), switch mirror
+                $elapsed = (Get-Date) - $startTime
+                if ($elapsed.TotalSeconds -gt 15 -and $delta -lt 2MB) {
+                    $slowCount++
+                    if ($slowCount -ge 2) {
+                        Write-Host ""
+                        Write-Host "    Too slow ($speedMBps MB/s), switching..." -ForegroundColor DarkYellow
+                        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                        break
+                    }
+                } else {
+                    $slowCount = 0
+                }
+            }
+        }
+        Write-Host ""
+
+        if (-not $proc.HasExited) {
+            $proc.WaitForExit()
+        }
+        $exitCode = $proc.ExitCode
+        Remove-Item "$outPath.curl.log" -Force -ErrorAction SilentlyContinue
+
+        # Check if download completed
+        if (Test-Path $outPath) {
+            $size = (Get-Item $outPath).Length
+            if ($size -ge $minSize) {
+                $sizeMB = [math]::Round($size / 1MB, 2)
+                Write-Host "  [OK] Downloaded: $sizeMB MB via $label" -ForegroundColor Green
+                return $true
+            }
+        }
+
+        # Not complete, try next mirror
+        $size = if (Test-Path $outPath) { [math]::Round((Get-Item $outPath).Length / 1MB, 1) } else { 0 }
+        Write-Host "    Incomplete ($size MB), trying next source..." -ForegroundColor DarkYellow
     }
-    Write-Host ""  # newline after progress
 
-    $proc.WaitForExit()
-    $exitCode = $proc.ExitCode
-
-    # Clean up curl log
-    Remove-Item "$outPath.curl.log" -Force -ErrorAction SilentlyContinue
-
-    # Check file size - curl may return non-zero on connection reset even if download completed
-    if (Test-Path $outPath) {
-        $size = (Get-Item $outPath).Length
-        if ($size -ge $minSize) { $exitCode = 0 }
-    }
-
-    if ($exitCode -ne 0) {
-        $size = if (Test-Path $outPath) { (Get-Item $outPath).Length } else { 0 }
-        Write-Host "  [FAIL] Download interrupted. $([math]::Round($size/1MB,1)) MB downloaded." -ForegroundColor Red
-        Write-Host "         Re-run this script to resume (supports breakpoint resume)." -ForegroundColor Yellow
-        Write-Host "         Or download manually: $url" -ForegroundColor Yellow
-        Write-Host "         Put the zip in: $outPath" -ForegroundColor Yellow
-        # Keep partial file for resume
-        return $false
-    }
-
-    if (-not (Test-Path $outPath)) {
-        Write-Host "  [FAIL] Output file not created" -ForegroundColor Red
-        return $false
-    }
-
-    $size = (Get-Item $outPath).Length
-    $sizeMB = [math]::Round($size / 1MB, 2)
-    Write-Host "  Downloaded: $sizeMB MB"
-    if ($size -lt $minSize) {
-        Write-Host "  [FAIL] File too small ($size bytes), likely an error page" -ForegroundColor Red
-        Remove-Item $outPath -Force -ErrorAction SilentlyContinue
-        return $false
-    }
-    return $true
+    # All mirrors failed
+    $size = if (Test-Path $outPath) { [math]::Round((Get-Item $outPath).Length / 1MB, 1) } else { 0 }
+    Write-Host "  [FAIL] All sources failed. $size MB downloaded." -ForegroundColor Red
+    Write-Host "         Or download manually: $url" -ForegroundColor Yellow
+    Write-Host "         Put the zip in: $outPath" -ForegroundColor Yellow
+    return $false
 }
 
 function Extract-Zip($zipPath, $destDir) {
