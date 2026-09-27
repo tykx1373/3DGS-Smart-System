@@ -24,7 +24,7 @@ function Get-LatestReleaseAssets($repo) {
 }
 
 function Get-FastestMirror($githubUrl) {
-    # Test multiple GitHub mirrors and return the fastest working one
+    # Test multiple GitHub mirrors by actually downloading first 5MB, return the fastest
     $mirrors = @(
         "https://gh-proxy.com/https://github.com",
         "https://github.moeyy.xyz/https://github.com",
@@ -35,29 +35,46 @@ function Get-FastestMirror($githubUrl) {
         "https://cdn.jsdelivr.net/gh"
     )
     $bestUrl = $githubUrl  # fallback to direct
-    $bestTime = [int]::MaxValue
+    $bestSpeed = 0  # bytes per second
+    $testRange = 5MB  # download first 5MB to test speed
+
+    Write-Host "  Testing mirror download speeds (5MB each)..."
 
     foreach ($m in $mirrors) {
         # jsdelivr mirrors use a different URL format
         if ($m -match "jsdelivr") {
-            # https://github.com/user/repo/releases/download/tag/file -> user/repo@tag/file
             $testUrl = $githubUrl -replace '^https://github.com/([^/]+/[^/]+)/releases/download/([^/]+)/(.+)$', "$m/`$1@`$2/`$3"
         } else {
             $testUrl = $githubUrl -replace '^https://github.com', $m
         }
+
+        $tmpFile = Join-Path $env:TEMP "mirror_test_$([guid]::NewGuid().ToString('N')).bin"
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $out = & curl.exe -sI -L --ssl-no-revoke --connect-timeout 8 --max-time 15 $testUrl 2>$null
+            & curl.exe -s -L --ssl-no-revoke --connect-timeout 8 --max-time 20 --range 0-$($testRange - 1) -o $tmpFile $testUrl 2>$null
             $sw.Stop()
-            if ($out -match "Content-Length:\s+(\d+)" -and [int64]$Matches[1] -gt 1000000) {
-                if ($sw.ElapsedMilliseconds -lt $bestTime) {
-                    $bestTime = $sw.ElapsedMilliseconds
-                    $bestUrl = $testUrl
+            if (Test-Path $tmpFile) {
+                $size = (Get-Item $tmpFile).Length
+                Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
+                if ($size -gt 1MB -and $sw.ElapsedMilliseconds -gt 0) {
+                    $speed = $size / $sw.Elapsed.TotalSeconds  # bytes/sec
+                    $speedMBps = [math]::Round($speed / 1MB, 2)
+                    Write-Host "    $m : $speedMBps MB/s"
+                    if ($speed -gt $bestSpeed) {
+                        $bestSpeed = $speed
+                        $bestUrl = $testUrl
+                    }
                 }
             }
         } catch {
-            # mirror failed, try next
+            Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    if ($bestSpeed -gt 0) {
+        Write-Host "  Best mirror: $([math]::Round($bestSpeed/1MB,2)) MB/s" -ForegroundColor Green
+    } else {
+        Write-Host "  No mirror available, using direct URL" -ForegroundColor Yellow
     }
     return $bestUrl
 }
