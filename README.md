@@ -1,244 +1,227 @@
-# 3DGS - 三维高斯泼溅工具
+# 3DGS Smart System — 基于 Vulkan 的三维高斯重建与实时渲染
 
-基于 ImGui + GLFW + OpenGL 3.0 的 3D Gaussian Splatting (3DGS) 图形化工具。
-支持图片导入、渲染管线、JSON 项目管理与 PLY 点云导出。
+一套面向轻量硬件的 3D Gaussian Splatting (3DGS) 一站式管线：用一组照片自动重建可旋转、可缩放的 3D 模型。
 
+整条链路**全程基于 Vulkan**，不依赖 CUDA，支持 NVIDIA / AMD / Intel 核显等任意 Vulkan 设备。
+
+```
+照片文件夹 → COLMAP 稀疏重建 → VkSplat (Vulkan) 训练 → VKGS 实时渲染查看
+```
+
+---
 
 ## 目录
 
 - [功能特性](#功能特性)
-- [环境要求](#环境要求)
-- [构建说明](#构建说明)
-- [使用指南](#使用指南)
-- [渲染管线](#渲染管线)
-- [输出格式](#输出格式)
-- [项目结构](#项目结构)
-- [技术栈](#技术栈)
+- [系统要求](#系统要求)
+- [依赖下载与安装](#依赖下载与安装)
+- [快速开始](#快速开始)
+- [目录结构](#目录结构)
+- [工作流程](#工作流程)
+- [质量档位](#质量档位)
+- [常见问题](#常见问题)
 - [许可证](#许可证)
 
 ---
 
 ## 功能特性
 
-### 已实现
-
-- **图片导入** — 多选导入 JPG / PNG / BMP，自动生成缩略图预览
-- **渲染管线** — 后台多线程管线，从图片像素采样生成 3DGS 高斯点云
-- **参数调节** — 采样步长、场景缩放、不透明度、高斯尺度实时可调
-- **PLY 导出** — 标准 62 属性二进制 PLY (位置/SH/不透明度/尺度/旋转)
-- **JSON 项目** — 保存/加载项目元数据与图片列表
-- **日志系统** — 实时持久化日志，文件位于 `logs/` 目录
-- **主题切换** — 浅色/深色双主题，标题栏一键切换
-- **字体缩放** — Ctrl + 滚轮调节，范围 0.5x ~ 3.0x
+- **一键式管线** — 选照片 → 自动稀疏重建 → 训练 → 打开查看器，全流程 GUI 操作
+- **Vulkan 训练** — 基于 [VkSplat](https://github.com/harry7557558/vksplat)，跨厂商 GPU 加速（NVIDIA / AMD / Intel 核显）
+- **双 COLMAP 版本** — CUDA 版（N 卡加速）与无 CUDA 版（纯 CPU，通用）可切换
+- **实时渲染** — 基于 [VKGS](https://github.com/limacv/vk_gaussian_splatting)，生成的 PLY 可直接预览
+- **智能 GPU 适配** — 自动检测独显/核显，动态调整高斯数量上限与缓存策略，防止核显 TDR 超时
+- **三档质量预设** — 快速（5000 步）/ 标准（15000 步）/ 高质量（30000 步）
+- **统一输出命名** — PLY 文件带参数标识，如 `vksplat_15000steps_standard.ply`
+- **日志系统** — GUI 实时显示 + 文件持久化（`logs/YYYYMMDD.log`，自动轮转）
 
 ---
 
-## 环境要求
+## 系统要求
 
 | 项目 | 要求 |
 |------|------|
-| 操作系统 | Windows 10/11 |
-| 编译器 | MSVC v143+ (Visual Studio 2022) |
-| C++ 标准 | C++20 |
-| 平台 | x64 |
+| 操作系统 | Windows 10 / 11 (x64) |
+| GPU | 任意支持 Vulkan 1.3+ 的显卡（独显或核显均可） |
+| 内存 | 8 GB 以上（核显建议 16 GB） |
+| Python | 3.9 ~ 3.12（推荐 Miniconda 管理环境） |
+| 编译器 | MSVC v143+（Visual Studio 2022），用于编译 VkSplat 的 pybind11 扩展 |
 
-## 构建说明
+---
 
-### 依赖库
+## 依赖下载与安装
 
-项目依赖以下库，已包含在仓库中（仅保留必要的源码和库文件）：
+项目仓库**不包含**第三方工具二进制（体积过大），需按以下步骤自行下载到 `tools for 3DGS/` 目录。
 
-| 库 | 版本 | 用途 |
-|----|------|------|
-| [Dear ImGui](https://github.com/ocornut/imgui) | 1.92+ | 即时模式 GUI 框架 |
-| [GLFW](https://www.glfw.org/) | 3.4 | 窗口管理与输入处理 |
-| [stb_image](https://github.com/nothings/stb) | 最新 | 图片解码 |
+> 推荐先装好 [Miniconda](https://docs.conda.io/en/latest/miniconda.html) 和 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)，再依次获取三个工具。
 
-### 目录布局
+### 1. Vulkan SDK（编译 VkSplat 必需）
+
+下载并安装 [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) for Windows。
+
+安装后确认环境变量 `VULKAN_SDK` 指向 SDK 根目录（如 `C:\VulkanSDK\1.3.x.x.x`），VkSplat 的 `setup.py` 会自动查找。
+
+### 2. COLMAP（稀疏重建）
+
+提供两个版本，按需下载其一或全部：
+
+| 版本 | 适用场景 | 下载地址 |
+|------|----------|----------|
+| `colmap-x64-windows-cuda` | 有 NVIDIA 显卡，GPU 加速特征提取 | [COLMAP Releases](https://github.com/colmap/colmap/releases)（选 `COLMAP-x.x.x-windows-cuda.zip`） |
+| `colmap-x64-windows-nocuda` | 无 NVIDIA 显卡或不想装 CUDA | 同上（选 `COLMAP-x.x.x-windows-nocuda.zip`） |
+
+下载后解压到 `tools for 3DGS/`，目录结构应为：
+
+```
+tools for 3DGS/
+├── colmap-x64-windows-cuda/
+│   └── COLMAP.bat
+└── colmap-x64-windows-nocuda/
+    └── COLMAP.bat
+```
+
+### 3. VkSplat（Vulkan 训练后端，需编译）
+
+```bash
+# 克隆源码到 tools for 3DGS/
+cd "tools for 3DGS"
+git clone https://github.com/harry7557558/vksplat.git
+```
+
+创建 conda 环境并编译安装：
+
+```bash
+conda create -n vksplat python=3.10 -y
+conda activate vksplat
+
+# 安装编译依赖
+pip install pybind11 setuptools wheel numpy opencv-python tqdm torchmetrics
+
+# 编译安装 VkSplat（需要 Vulkan SDK + MSVC）
+cd "tools for 3DGS/vksplat/vksplat"
+pip install -e . --no-build-isolation
+```
+
+> 若 `pip install -e .` 报找不到 Vulkan，请确认 `VULKAN_SDK` 环境变量已设置。
+> 编译成功后可在 Python 中 `import vksplat` 验证。
+
+### 4. VKGS（实时渲染查看器）
+
+下载预编译版本：[vk_gaussian_splatting Releases](https://github.com/limacv/vk_gaussian_splatting/releases)
+
+解压到 `tools for 3DGS/vkgs-2026.2.9-windows-64bits/`，确保存在 `vk_gaussian_splatting.exe`。
+
+最终 `tools for 3DGS/` 目录结构：
+
+```
+tools for 3DGS/
+├── colmap-x64-windows-cuda/        # COLMAP CUDA 版
+├── colmap-x64-windows-nocuda/      # COLMAP 无 CUDA 版
+├── vksplat/                        # VkSplat 源码（已 pip install -e）
+│   └── vksplat/
+│       ├── setup.py
+│       ├── src/
+│       └── shader/
+└── vkgs-2026.2.9-windows-64bits/   # VKGS 查看器
+    └── vk_gaussian_splatting.exe
+```
+
+---
+
+## 快速开始
+
+### 启动 GUI
+
+双击根目录下的 `run.bat`，脚本会自动查找 `vksplat` conda 环境的 Python 并启动 GUI。
+
+或手动运行：
+
+```bash
+conda activate vksplat
+python gui/quick_gui.py
+```
+
+### 使用流程
+
+1. **选择照片文件夹** — 点击「浏览…」选择一组照片（建议 30~200 张，绕物体一圈拍摄，重叠 60% 以上）
+2. **选择质量档位** — 快速 / 标准 / 高质量（见[质量档位](#质量档位)）
+3. **开始生成** — 点击「开始生成 3D 模型」，COLMAP 自动做稀疏重建，VkSplat 训练高斯模型
+4. **查看结果** — 训练完成后自动启动 VKGS 查看器，可旋转/缩放预览 3D 模型
+
+> 首次使用建议在「高级选项」中确认各工具路径正确，然后点「保存路径」。
+
+---
+
+## 目录结构
 
 ```
 3DGS/
-├── imgui/              # ImGui 源码 (核心 + backends)
-├── glfw/               # GLFW 预编译库
-│   ├── include/        # 头文件
-│   └── lib-vc2022/     # MSVC 2022 静态库 + DLL
-└── 3DGS/               # 本项目源码
-```
-
-### 方式一：Visual Studio IDE
-
-1. 用 Visual Studio 2022 打开 `3DGS.slnx`
-2. 选择 `Debug|x64` 或 `Release|x64` 配置
-3. 按 `F5` 或 `Ctrl+F5` 编译运行
-
-### 方式二：命令行 (MSBuild)
-
-```batch
-msbuild 3DGS.slnx -p:Configuration=Release -p:Platform=x64
-```
-
-编译后可执行文件位于 `bin\x64\Debug\3DGS.exe` (Debug) 或 `bin\x64\Release\3DGS.exe` (Release)。
-GLFW 的 DLL (`glfw3.dll`) 会在编译时自动复制到输出目录。
-
----
-
-## 使用指南
-
-### 基本工作流
-
-1. **导入图片** — 点击「导入图片」选择输入图片 (支持多选)
-2. **调整参数** — 在「渲染参数」区调节采样步长、场景缩放等
-3. **开始渲染** — 点击「开始渲染」，进度条实时显示处理状态
-4. **导出点云** — 渲染完成后点击「导出点云 (PLY)」保存结果
-5. **保存项目** — 点击「导出项目 (JSON)」保存项目元数据
-
-### 界面说明
-
-程序采用标题栏 + 侧边栏导航 + 内容区 + 状态栏的专业布局：
-
-| 区域 | 说明 |
-|------|------|
-| 标题栏 | 应用名/版本 + 主题切换按钮 |
-| 侧边栏 | 控制面板 / 日志 / 帮助 三个导航页 |
-| 内容区 | 根据导航切换的功能面板 |
-| 状态栏 | 就绪状态、渲染进度、图片数、FPS |
-
-### 控制面板
-
-| 分区 | 功能 |
-|------|------|
-| 项目管理 | 加载项目 (JSON) / 导出项目 (JSON) |
-| 工作流程 | 导入图片 / 开始渲染 / 停止渲染 |
-| 渲染参数 | 采样步长、场景缩放、不透明度、高斯尺度 |
-| 导出 | 导出点云 (PLY) / 清空图片 |
-| 图片预览 | 缩略图网格，右键可移除单张 |
-
-### 快捷键
-
-| 快捷键 | 功能 |
-|--------|------|
-| `Ctrl` + `鼠标滚轮` | 放大/缩小字体 (0.5x ~ 3.0x，步进 5%) |
-
----
-
-## 渲染管线
-
-渲染管线 (`pipeline.h/.cpp`) 在后台线程运行，不阻塞 UI，可随时停止。
-
-### 处理流程
-
-1. 遍历每张导入图片，按采样步长 (`sampleStep`) 读取像素
-2. 跳过近黑像素 (RGB 总和 < 30)
-3. 每个采样像素生成一个高斯点 (62 个属性)
-4. 像素颜色经 sRGB → 线性 → SH DC 系数转换
-5. 多张图片在 Z 轴分层排布，创建深度感
-6. 最终打乱点序，使不同图片的点交错分布
-
-### 可调参数
-
-| 参数 | 范围 | 默认值 | 说明 |
-|------|------|--------|------|
-| 采样步长 | 1-16 像素 | 4 | 越小点越密集 |
-| 场景缩放 | 0.5-5.0 | 2.0 | 整体场景大小 |
-| 高斯不透明度 | 0.1-1.0 | 0.85 | 点的不透明度 |
-| 高斯尺度 | 0.1-1.0 | 0.30 | 点的大小 |
-
----
-
-## 输出格式
-
-### PLY 点云 (二进制)
-
-渲染完成后导出的 PLY 文件为 `binary_little_endian` 格式，每个顶点包含 62 个属性：
-
-| 属性组 | 字段 | 数量 |
-|--------|------|------|
-| 位置 | x, y, z | 3 |
-| 法线 | nx, ny, nz | 3 |
-| SH DC 系数 | f_dc_0, f_dc_1, f_dc_2 | 3 |
-| SH 高阶系数 | f_rest_0 ~ f_rest_44 | 45 |
-| 不透明度 | opacity | 1 |
-| 尺度 | scale_0, scale_1, scale_2 | 3 |
-| 旋转 | rot_0, rot_1, rot_2, rot_3 | 4 |
-
-### JSON 项目文件
-
-```json
-{
-  "version": "1.0",
-  "project": {
-    "name": "My 3DGS Project",
-    "created_time": "2026-07-26T10:00:00",
-    "modified_time": "2026-07-26T10:30:00"
-  },
-  "images": [
-    {
-      "file_path": "D:\\photos\\image001.jpg",
-      "file_name": "image001.jpg",
-      "file_size": 2048000,
-      "width": 3840,
-      "height": 2160,
-      "channels": 3
-    }
-  ],
-  "output": {
-    "path": "D:\\output\\project.json",
-    "ply_path": "D:\\output\\point_cloud.ply",
-    "format": "ply"
-  },
-  "statistics": {
-    "total_images": 1,
-    "total_file_size": 2048000,
-    "total_file_size_formatted": "1 MB"
-  }
-}
+├── run.bat                     # 一键启动脚本（自动查找 vksplat Python 环境）
+├── gui/
+│   ├── quick_gui.py            # 主 GUI（串联 COLMAP → VkSplat → VKGS）
+│   ├── detect_gpu.py           # Vulkan 设备检测（独显/核显自动适配）
+│   └── quick_gui_config.json   # 工具路径配置（首次保存后生成）
+├── docs/
+│   ├── 基于Vulkan的轻量化三维高斯重建与实时渲染系统项目计划书.md
+│   └── 日志术语对照表.md
+├── tools for 3DGS/             # 第三方工具（需自行下载，见上）
+│   ├── colmap-x64-windows-cuda/
+│   ├── colmap-x64-windows-nocuda/
+│   ├── vksplat/
+│   └── vkgs-2026.2.9-windows-64bits/
+├── workspaces/                 # 运行时生成：COLMAP 中间结果
+├── outputs/                    # 运行时生成：VkSplat 训练输出
+├── logs/                       # 运行时生成：日志文件（自动轮转）
+├── .gitignore
+├── LICENSE                     # AGPL-3.0
+└── README.md
 ```
 
 ---
 
-## 项目结构
+## 工作流程
 
-```
-3DGS/
-├── main.cpp                # 程序入口、ImGui/GLFW 初始化与主循环
-├── app_state.h             # 全局应用状态 (ImageManager + Pipeline + Config)
-├── pipeline.h/.cpp         # 渲染管线 (后台线程、高斯点生成)
-├── image_manager.h/.cpp    # 图片管理与缩略图纹理
-├── project_io.h/.cpp       # JSON 项目存取 + PLY 点云导出
-├── log_system.h/.cpp       # 日志系统 (持久化到文件)
-├── file_dialog.h/.cpp      # Win32 文件对话框封装
-├── theme.h                 # 浅色/深色主题
-├── stb_image.h             # stb_image 单头文件库
-├── ui_main_window.h/.cpp   # 主窗口布局 (标题栏/侧边栏/内容区/状态栏)
-├── ui_control_panel.h/.cpp # 控制面板
-├── ui_log_panel.h/.cpp     # 日志面板
-└── ui_help_panel.h/.cpp    # 帮助面板
-```
+GUI 内部按以下步骤执行：
+
+1. **COLMAP 特征提取** — `feature_extractor`，提取 SIFT 特征点
+2. **COLMAP 特征匹配** — `exhaustive_matcher`，两两匹配图片
+3. **COLMAP 稀疏重建** — `mapper`，恢复相机位姿与稀疏点云
+4. **VkSplat 训练** — 读取 COLMAP 的 `sparse/0/`，用 Vulkan 计算训练高斯模型（MCMC 策略）
+5. **VKGS 查看** — 启动 `vk_gaussian_splatting.exe` 加载生成的 PLY
+
+输出 PLY 文件命名：`vksplat_<步数>steps_<质量>.ply`，位于对应工作区根目录。
 
 ---
 
-## 技术栈
+## 质量档位
 
-| 技术 | 用途 |
-|------|------|
-| C++20 | 主开发语言 |
-| Dear ImGui 1.92+ | 即时模式 GUI |
-| GLFW 3.4 | 窗口管理 |
-| OpenGL 3.0 | 渲染后端 |
-| stb_image | 图片解码 |
-| Win32 API | 文件对话框、Shell 执行 |
-| std::thread | 后台渲染管线 |
+| 档位 | 训练步数 | 预估耗时 | 适用场景 |
+|------|----------|----------|----------|
+| 快速 | 5,000 | 2~3 分钟 | 快速预览轮廓，验证流程 |
+| 标准 | 15,000 | 8~10 分钟 | 日常使用，推荐 |
+| 高质量 | 30,000 | 20 分钟+ | 细节最丰富 |
 
-### 编译选项
+> 所有档位统一使用 MCMC 致密化策略，确保高斯点充分增长。
+> 核显会自动降低高斯上限（cap_max = 500,000）并使用 CPU 图像缓存，避免 TDR 超时；独显上限为 1,000,000。
 
-- `/utf-8` — MSVC UTF-8 源码编码支持
-- `/Zc:char8_t-` — 兼容 C++20 u8 字面量与 ImGui API
-- `C++20 (stdcpp20)` — 语言标准
+---
 
-### 后续计划
+## 常见问题
 
-- **GPU 加速** — 当前渲染在 CPU 上运行，后续计划迁移到 CUDA 或 Vulkan 实现性能提升
-  → 详见 [ROADMAP.md](ROADMAP.md)
+**Q: 启动时提示找不到 Python？**
+A: 确保已安装 Miniconda 并创建了 `vksplat` 环境。`run.bat` 会自动搜索常见安装路径，也可手动编辑 `run.bat` 指定 Python 路径。
+
+**Q: VkSplat 编译失败，提示找不到 Vulkan？**
+A: 确认已安装 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)，且环境变量 `VULKAN_SDK` 指向 SDK 根目录。
+
+**Q: 训练时 GPU 超时（TDR）？**
+A: 核显用户请确认 cap_max 已自动设为 500,000；若仍超时，可在高级选项中手动降低高斯上限。
+
+**Q: COLMAP 重建失败？**
+A: 检查照片是否有足够重叠（建议 60%+），数量不少于 30 张；模糊或无纹理的图片会导致特征点不足。
+
+**Q: 输出的 PLY 用什么打开？**
+A: 训练完成后 GUI 会自动用 VKGS 打开；也可手动用 `vk_gaussian_splatting.exe` 或其他支持 3DGS PLY 的查看器打开。
 
 ---
 
@@ -250,12 +233,12 @@ GLFW 的 DLL (`glfw3.dll`) 会在编译时自动复制到输出目录。
 
 ### 第三方依赖及许可证
 
-本项目依赖以下开源软件，各组件保留其原始许可证：
+本项目通过**外部进程调用**以下开源工具（非代码链接），各组件保留其原始许可证：
 
 | 组件 | 用途 | 许可证 |
 |------|------|--------|
 | [COLMAP](https://github.com/colmap/colmap) | 稀疏重建（SfM/MVS） | BSD-3-Clause |
-| [vkSplat](https://github.com/vk-splat/vksplat) | 3DGS 训练后端（Vulkan） | Apache-2.0 |
+| [VkSplat](https://github.com/harry7557558/vksplat) | 3DGS 训练后端（Vulkan） | Apache-2.0 |
 | [VKGS](https://github.com/limacv/vk_gaussian_splatting) | 实时渲染查看器 | MIT |
 
-> **说明**：本项目通过**外部进程调用**上述工具（非代码链接），因此本项目代码可独立采用 AGPL-3.0 协议。各第三方工具的源代码请前往其各自仓库获取。
+各第三方工具的源代码请前往其各自仓库获取。
