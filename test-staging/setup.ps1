@@ -59,8 +59,14 @@ if (Test-Path $preDownloaded) {
 # --- 3. Run download_tools.bat ---
 Write-Host "[3/3] Running download_tools.bat ..." -ForegroundColor Cyan
 Write-Host ""
-Set-Location $projectWritable
-cmd /c "download_tools.bat"
+$batPath = Join-Path $projectWritable "download_tools.bat"
+if (-not (Test-Path $batPath)) {
+    Write-Host "[FAIL] $batPath not found after copy!" -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+# Use absolute path and force cd to avoid running from read-only C:\3DGS-src
+cmd /c "cd /d $projectWritable && call `"$batPath`""
 
 Write-Host ""
 Write-Host "=== Setup complete ===" -ForegroundColor Green
