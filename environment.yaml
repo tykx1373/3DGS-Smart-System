@@ -4,13 +4,13 @@ channels:
 dependencies:
   - python=3.10
   - pip>=23
-  - pybind11>=2.10
   - setuptools>=68
-  - wheel>=0.41
   - numpy>=1.24
   - tqdm>=4.65
   - pip:
       - opencv-python-headless>=4.8
-      - torchmetrics>=1.0
-      # VkSplat 需要单独编译安装（需要 Vulkan SDK + MSVC）：
-      #   pip install -e tools/vksplat/vksplat --no-build-isolation
+      # torch (CPU-only) and torchmetrics are installed separately by
+      # download_tools.ps1 to ensure the CPU wheel is used (no CUDA bloat).
+      # VkSplat is installed by download_tools.bat using prebuilt .pyd (no compile needed).
+      # To recompile from source: pip install -e tools/vksplat/vksplat --no-build-isolation
+      #   (requires Vulkan SDK + MSVC)

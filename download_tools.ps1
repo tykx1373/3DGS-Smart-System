@@ -489,6 +489,18 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
     if ($condaPython) {
         Write-Host "  Using env python: $condaPython"
 
+        # Install CPU-only PyTorch + torchmetrics (from PyTorch CPU index, no CUDA bloat)
+        $torchInstalled = & $condaPython -c "import torch; print('ok')" 2>$null
+        if ($torchInstalled -ne "ok") {
+            Write-Host "  Installing CPU-only PyTorch + torchmetrics..."
+            cmd /c "`"$condaPython`" -m pip install torch torchmetrics --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[WARN] torch install failed. Try: pip install torch torchmetrics" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "  torch already installed, skipping"
+        }
+
         # Determine Python ABI version (e.g. 310 for Python 3.10)
         $pyVer = & $condaPython -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>$null
         $prebuiltPyd = Join-Path $vksplatPy "vksplat.cp$pyVer-win_amd64.pyd"

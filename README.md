@@ -135,6 +135,9 @@ mamba env create -f environment.yaml
 # 激活环境
 mamba activate vksplat
 
+# 安装 CPU-only PyTorch + torchmetrics（VkSplat 用 Vulkan 而非 CUDA）
+pip install torch torchmetrics --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+
 # 安装 VkSplat（自动使用预编译 .pyd，无需编译）
 # 若需重新编译（修改了 C++ 源码），才需要 Vulkan SDK + MSVC
 pip install -e tools/vksplat/vksplat --no-build-isolation
@@ -144,6 +147,8 @@ pip install -e tools/vksplat/vksplat --no-build-isolation
 > 安装成功后可在 Python 中 `import vksplat` 验证。
 >
 > 没有 mamba？用 conda 也一样：`conda env create -f environment.yaml`
+>
+> 以上步骤 `download_tools.bat` 会自动完成，手动安装仅作参考。
 
 最终 `tools/` 目录结构：
 
