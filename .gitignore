@@ -457,5 +457,6 @@ sample/
 # Clean-environment test (Windows Sandbox)
 test-staging/*.exe
 test-staging/*.msi
+test-staging/pre-downloaded/
 
 

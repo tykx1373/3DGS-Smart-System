@@ -45,6 +45,17 @@ New-Item "$projectWritable\tools" -ItemType Directory -Force | Out-Null
 Set-Content "$projectWritable\tools\.gitkeep" "" -Encoding ascii
 Write-Host "      Project copied (env/ and tools/ removed)." -ForegroundColor Green
 
+# --- 2b. Copy pre-downloaded tools (COLMAP, VKGS) to skip downloads ---
+$preDownloaded = "C:\test-staging\pre-downloaded"
+if (Test-Path $preDownloaded) {
+    Write-Host "      Copying pre-downloaded tools to skip download step..."
+    Get-ChildItem $preDownloaded -Directory | ForEach-Object {
+        Copy-Item $_.FullName "$projectWritable\tools\" -Recurse -Force
+        Write-Host "        - $($_.Name)"
+    }
+    Write-Host "      Pre-downloaded tools copied." -ForegroundColor Green
+}
+
 # --- 3. Run download_tools.bat ---
 Write-Host "[3/3] Running download_tools.bat ..." -ForegroundColor Cyan
 Write-Host ""
