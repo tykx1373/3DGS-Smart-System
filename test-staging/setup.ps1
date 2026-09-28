@@ -1,26 +1,28 @@
 # test-staging/setup.ps1
 # Runs automatically inside Windows Sandbox after logon.
 # 1. Silently installs Miniforge
-# 2. Copies the (read-only mapped) project to a writable location
-# 3. Runs download_tools.bat
+# 2. Extracts clean project archive (git archive, same as GitHub download)
+# 3. Copies pre-downloaded COLMAP & VKGS into tools/
+# 4. Runs download_tools.bat
 
 $ErrorActionPreference = "Continue"
 
 Write-Host "=== 3DGS Clean-Environment Test Setup ===" -ForegroundColor Cyan
 Write-Host ""
 
-# --- 1. Install Miniforge silently ---
 $stagingDir = "C:\test-staging"
+$projectWritable = "C:\3DGS"
+
+# --- 1. Install Miniforge silently ---
 $installer = Get-ChildItem $stagingDir -Filter "Miniforge3-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $installer) {
     Write-Host "[FAIL] Miniforge installer not found in $stagingDir" -ForegroundColor Red
-    Write-Host "       Download Miniforge3-Windows-x86_64.exe into test-staging/ on the host."
     Read-Host "Press Enter to exit"
     exit 1
 }
 
 $miniforgePath = "C:\Miniforge3"
-Write-Host "[1/3] Installing Miniforge silently to $miniforgePath ..."
+Write-Host "[1/4] Installing Miniforge silently to $miniforgePath ..."
 $proc = Start-Process -FilePath $installer.FullName -ArgumentList "/InstallationType=JustMe","/RegisterPython=0","/S","/D=$miniforgePath" -Wait -PassThru
 if ($proc.ExitCode -ne 0) {
     Write-Host "[FAIL] Miniforge installation failed (exit code $($proc.ExitCode))" -ForegroundColor Red
@@ -28,44 +30,38 @@ if ($proc.ExitCode -ne 0) {
     exit 1
 }
 Write-Host "      Miniforge installed." -ForegroundColor Green
-
-# Refresh PATH for this session
 $env:Path = "$miniforgePath;$miniforgePath\Scripts;$miniforgePath\condabin;$env:Path"
 
-# --- 2. Copy project to writable location (clean: remove env/ and tools/) ---
-$projectReadOnly = "C:\3DGS-src"
-$projectWritable = "C:\3DGS"
-Write-Host "[2/3] Copying project to $projectWritable (clean state)..."
+# --- 2. Extract clean project archive (identical to GitHub clone) ---
+$zipPath = Join-Path $stagingDir "project-clean.zip"
+Write-Host "[2/4] Extracting clean project to $projectWritable ..."
 if (Test-Path $projectWritable) { Remove-Item $projectWritable -Recurse -Force }
-Copy-Item $projectReadOnly $projectWritable -Recurse -Force
-# Remove any pre-existing env/ and tools/ to simulate a fresh clone
-Remove-Item "$projectWritable\env" -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item "$projectWritable\tools" -Recurse -Force -ErrorAction SilentlyContinue
-New-Item "$projectWritable\tools" -ItemType Directory -Force | Out-Null
-Set-Content "$projectWritable\tools\.gitkeep" "" -Encoding ascii
-Write-Host "      Project copied (env/ and tools/ removed)." -ForegroundColor Green
+Expand-Archive -Path $zipPath -DestinationPath $projectWritable -Force
+Write-Host "      Project extracted (clean state, no env/ or tools/)." -ForegroundColor Green
 
-# --- 2b. Copy pre-downloaded tools (COLMAP, VKGS) to skip downloads ---
-$preDownloaded = "C:\test-staging\pre-downloaded"
+# --- 3. Copy pre-downloaded tools (COLMAP, VKGS) to skip downloads ---
+$preDownloaded = Join-Path $stagingDir "pre-downloaded"
 if (Test-Path $preDownloaded) {
-    Write-Host "      Copying pre-downloaded tools to skip download step..."
+    Write-Host "[3/4] Copying pre-downloaded tools to skip download step..."
+    New-Item "$projectWritable\tools" -ItemType Directory -Force | Out-Null
     Get-ChildItem $preDownloaded -Directory | ForEach-Object {
         Copy-Item $_.FullName "$projectWritable\tools\" -Recurse -Force
         Write-Host "        - $($_.Name)"
     }
     Write-Host "      Pre-downloaded tools copied." -ForegroundColor Green
+} else {
+    Write-Host "[3/4] No pre-downloaded tools found, will download in step 4." -ForegroundColor Yellow
 }
 
-# --- 3. Run download_tools.bat ---
-Write-Host "[3/3] Running download_tools.bat ..." -ForegroundColor Cyan
-Write-Host ""
+# --- 4. Run download_tools.bat ---
 $batPath = Join-Path $projectWritable "download_tools.bat"
+Write-Host "[4/4] Running download_tools.bat ..." -ForegroundColor Cyan
+Write-Host ""
 if (-not (Test-Path $batPath)) {
-    Write-Host "[FAIL] $batPath not found after copy!" -ForegroundColor Red
+    Write-Host "[FAIL] $batPath not found!" -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
 }
-# Use absolute path and force cd to avoid running from read-only C:\3DGS-src
 cmd /c "cd /d $projectWritable && call `"$batPath`""
 
 Write-Host ""

@@ -4,11 +4,6 @@
   <ClipboardRedirection>Enable</ClipboardRedirection>
   <MappedFolders>
     <MappedFolder>
-      <HostFolder>d:\Desktop\3DGS</HostFolder>
-      <SandboxFolder>C:\3DGS-src</SandboxFolder>
-      <ReadOnly>true</ReadOnly>
-    </MappedFolder>
-    <MappedFolder>
       <HostFolder>d:\Desktop\3DGS\test-staging</HostFolder>
       <SandboxFolder>C:\test-staging</SandboxFolder>
       <ReadOnly>false</ReadOnly>
