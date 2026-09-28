@@ -10,6 +10,6 @@
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell -NoProfile -ExecutionPolicy Bypass -File C:\test-staging\setup.ps1</Command>
+    <Command>powershell -NoProfile -ExecutionPolicy Bypass -NoExit -File C:\test-staging\setup.ps1 *&gt; C:\test-staging\setup.log</Command>
   </LogonCommand>
 </Configuration>
