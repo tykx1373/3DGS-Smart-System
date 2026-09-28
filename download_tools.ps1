@@ -414,16 +414,22 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
         }
     }
 
+    # Project-local env path (preferred - self-contained, predictable)
+    $projectEnvPython = Join-Path $PSScriptRoot "env\vksplat\python.exe"
+
     # Try to find vksplat conda env python
     $condaPython = $null
-    # First, use the detected conda base path
-    if ($condaBase) {
+    # First priority: project-local env
+    if (Test-Path $projectEnvPython) { $condaPython = $projectEnvPython }
+    # Second: use the detected conda base path
+    if (-not $condaPython -and $condaBase) {
         $p = Join-Path $condaBase "envs\vksplat\python.exe"
         if (Test-Path $p) { $condaPython = $p }
     }
     # Fallback: common paths
     if (-not $condaPython) {
         $condaCandidates = @(
+            "$env:USERPROFILE\.conda\envs\vksplat\python.exe",
             "C:\mambaforge\envs\vksplat\python.exe",
             "C:\miniforge3\envs\vksplat\python.exe",
             "C:\miniconda3\envs\vksplat\python.exe",
@@ -437,7 +443,6 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             "$env:USERPROFILE\miniforge3\envs\vksplat\python.exe",
             "$env:USERPROFILE\miniconda3\envs\vksplat\python.exe",
             "$env:USERPROFILE\anaconda3\envs\vksplat\python.exe",
-            "$env:USERPROFILE\.conda\envs\vksplat\python.exe",
             "$env:USERPROFILE\AppData\Local\mambaforge\envs\vksplat\python.exe",
             "$env:USERPROFILE\AppData\Local\miniforge3\envs\vksplat\python.exe",
             "$env:USERPROFILE\AppData\Local\miniconda3\envs\vksplat\python.exe",
@@ -452,7 +457,7 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
         }
     }
 
-    # If env doesn't exist, create it from environment.yaml
+    # If env doesn't exist, create it in project-local env/ directory
     if (-not $condaPython) {
         if ($mambaExe) {
             $managerName = if ($mambaExe -match "mamba") { "mamba" } else { "conda" }
@@ -464,13 +469,11 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             cmd /c "$mambaExe config --remove channels defaults 2>nul"
             cmd /c "$mambaExe config --set show_channel_urls yes 2>nul"
 
-            Write-Host "Creating vksplat environment from environment.yaml (using $managerName)..."
-            cmd /c "$mambaExe env create -f environment.yaml -y --quiet 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
-            # Re-find python after env creation
-            if ($condaBase) {
-                $p = Join-Path $condaBase "envs\vksplat\python.exe"
-                if (Test-Path $p) { $condaPython = $p }
-            }
+            $envPrefix = Join-Path $PSScriptRoot "env\vksplat"
+            Write-Host "Creating vksplat environment at env\vksplat (using $managerName)..."
+            cmd /c "$mambaExe env create --prefix `"$envPrefix`" -f environment.yaml -y --quiet 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
+            # Re-find python after env creation (project-local first)
+            if (Test-Path $projectEnvPython) { $condaPython = $projectEnvPython }
             if (-not $condaPython) {
                 foreach ($c in $condaCandidates) {
                     if (Test-Path $c) { $condaPython = $c; break }
@@ -491,7 +494,6 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             Write-Host "[OK] vksplat installed successfully" -ForegroundColor Green
         } else {
             Write-Host "[WARN] vksplat install failed. Try manually:" -ForegroundColor Yellow
-            Write-Host "       mamba activate vksplat"
             Write-Host "       pip install -e tools/vksplat/vksplat --no-build-isolation"
             $failed += "VkSplat-build"
         }

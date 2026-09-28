@@ -448,6 +448,9 @@ gui/quick_gui_config.json
 workspaces/
 outputs/
 
+# Project-local conda env (created by download_tools.bat)
+env/
+
 # Sample datasets (large, optional — uncomment to track)
 sample/
 

@@ -44,8 +44,13 @@ DEFAULT_VKGS = _find_vkgs_exe()
 
 # VkSplat 训练环境 Python（动态查找 vksplat conda 环境，找不到回退当前 Python）
 def _find_vksplat_python():
-    """优先在常见 conda 安装路径下查找 vksplat 环境的 python.exe，
+    """优先查找项目目录下的 env/vksplat（自包含），其次常见 conda 安装路径，
     找不到则回退到当前运行 GUI 的 Python（要求其已 pip install vksplat）。"""
+    # Strategy 0: project-local env (self-contained, most reliable)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p = os.path.join(project_root, "env", "vksplat", "python.exe")
+    if os.path.exists(p):
+        return p
     # Strategy 1: find conda/mamba via PATH, derive env python from its base dir
     for cmd in ("mamba", "conda"):
         exe = shutil.which(cmd)
@@ -57,11 +62,11 @@ def _find_vksplat_python():
                 return p
     # Strategy 2: search common install paths
     for base in [
+        os.path.expanduser(r"~\.conda"),
         r"C:\mambaforge", r"C:\miniforge3", r"C:\miniconda3", r"C:\anaconda3",
         r"D:\mambaforge", r"D:\miniforge3", r"D:\miniconda3-pbe", r"D:\miniconda3", r"D:\anaconda3",
         os.path.expanduser(r"~\mambaforge"), os.path.expanduser(r"~\miniforge3"),
         os.path.expanduser(r"~\miniconda3"), os.path.expanduser(r"~\anaconda3"),
-        os.path.expanduser(r"~\.conda"),
         os.path.expanduser(r"~\AppData\Local\mambaforge"),
         os.path.expanduser(r"~\AppData\Local\miniforge3"),
         os.path.expanduser(r"~\AppData\Local\miniconda3"),

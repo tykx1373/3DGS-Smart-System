@@ -1,9 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM ---- Locate Python: prefer vksplat conda env (has vksplat + tkinter) ----
+REM ---- Locate Python: prefer project-local env (self-contained) ----
 set "PYEXE="
 for %%P in (
+  "%~dp0env\vksplat\python.exe"
   "C:\mambaforge\envs\vksplat\python.exe"
   "C:\miniforge3\envs\vksplat\python.exe"
   "C:\miniconda3\envs\vksplat\python.exe"
