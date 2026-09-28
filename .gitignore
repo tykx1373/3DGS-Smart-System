@@ -454,3 +454,8 @@ env/
 # Sample datasets (large, optional — uncomment to track)
 sample/
 
+# Clean-environment test (Windows Sandbox)
+test-staging/*.exe
+test-staging/*.msi
+
+
