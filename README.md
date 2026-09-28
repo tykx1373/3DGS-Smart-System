@@ -97,8 +97,10 @@ download_tools.bat
 
 | 版本 | 适用场景 | 下载地址 |
 |------|----------|----------|
-| `colmap-x64-windows-cuda` | 有 NVIDIA 显卡，GPU 加速特征提取 | [COLMAP Releases](https://github.com/colmap/colmap/releases)（选 `COLMAP-x.x.x-windows-cuda.zip`） |
-| `colmap-x64-windows-nocuda` | 无 NVIDIA 显卡或不想装 CUDA | 同上（选 `COLMAP-x.x.x-windows-nocuda.zip`） |
+| `colmap-x64-windows-cuda` | 有 NVIDIA 显卡，GPU 加速特征提取（**只需 NVIDIA 驱动，无需安装 CUDA Toolkit**） | [COLMAP Releases](https://github.com/colmap/colmap/releases)（选 `COLMAP-x.x.x-windows-cuda.zip`） |
+| `colmap-x64-windows-nocuda` | 无 NVIDIA 显卡（AMD/Intel 核显），纯 CPU 运行 | 同上（选 `COLMAP-x.x.x-windows-nocuda.zip`） |
+
+> **注意：** COLMAP CUDA 版是预编译二进制，已静态包含 CUDA runtime，用户**不需要安装 CUDA Toolkit**。整个 3DGS 项目的训练和渲染基于 Vulkan（VkSplat），不依赖 CUDA；仅 COLMAP 的特征提取步骤可选 CUDA 加速。
 
 下载后解压到 `tools/`，目录结构应为：
 
