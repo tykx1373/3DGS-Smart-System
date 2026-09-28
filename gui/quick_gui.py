@@ -61,6 +61,7 @@ def _find_vksplat_python():
         r"D:\mambaforge", r"D:\miniforge3", r"D:\miniconda3-pbe", r"D:\miniconda3", r"D:\anaconda3",
         os.path.expanduser(r"~\mambaforge"), os.path.expanduser(r"~\miniforge3"),
         os.path.expanduser(r"~\miniconda3"), os.path.expanduser(r"~\anaconda3"),
+        os.path.expanduser(r"~\.conda"),
         os.path.expanduser(r"~\AppData\Local\mambaforge"),
         os.path.expanduser(r"~\AppData\Local\miniforge3"),
         os.path.expanduser(r"~\AppData\Local\miniconda3"),

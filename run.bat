@@ -17,6 +17,7 @@ for %%P in (
   "%USERPROFILE%\miniforge3\envs\vksplat\python.exe"
   "%USERPROFILE%\miniconda3\envs\vksplat\python.exe"
   "%USERPROFILE%\anaconda3\envs\vksplat\python.exe"
+  "%USERPROFILE%\.conda\envs\vksplat\python.exe"
   "%USERPROFILE%\AppData\Local\mambaforge\envs\vksplat\python.exe"
   "%USERPROFILE%\AppData\Local\miniforge3\envs\vksplat\python.exe"
   "%USERPROFILE%\AppData\Local\miniconda3\envs\vksplat\python.exe"

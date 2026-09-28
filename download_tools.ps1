@@ -437,6 +437,7 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             "$env:USERPROFILE\miniforge3\envs\vksplat\python.exe",
             "$env:USERPROFILE\miniconda3\envs\vksplat\python.exe",
             "$env:USERPROFILE\anaconda3\envs\vksplat\python.exe",
+            "$env:USERPROFILE\.conda\envs\vksplat\python.exe",
             "$env:USERPROFILE\AppData\Local\mambaforge\envs\vksplat\python.exe",
             "$env:USERPROFILE\AppData\Local\miniforge3\envs\vksplat\python.exe",
             "$env:USERPROFILE\AppData\Local\miniconda3\envs\vksplat\python.exe",
