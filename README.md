@@ -45,7 +45,7 @@
 | GPU | 任意支持 Vulkan 1.3+ 的显卡（独显或核显均可） |
 | 内存 | 8 GB 以上（核显建议 16 GB） |
 | Python | 3.9 ~ 3.12（推荐 [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge) 管理环境） |
-| 编译器 | MSVC v143+（Visual Studio 2022），用于编译 VkSplat 的 pybind11 扩展 |
+| 编译器 | 无需安装（已包含预编译 VkSplat `.pyd`）。仅当需重新编译时才需要 MSVC v143+ + Vulkan SDK |
 
 ---
 
@@ -66,7 +66,7 @@ download_tools.bat
   - 有 NVIDIA GPU：提示用户选择 CUDA 版（推荐）/ noCUDA 版 / 两者都装
   - 无 NVIDIA GPU：直接下载 noCUDA 版（兼容所有显卡）
 - **VKGS** — 从 GitHub Releases 下载最新 Windows 预编译包，自动解压
-- **VkSplat** — 源码已包含在仓库中，自动编译安装（`pip install -e`）
+- **VkSplat** — 源码 + **预编译 `.pyd`** 已包含在仓库中，自动安装（无需编译，无需 Vulkan SDK / MSVC）
 - 已存在的工具会自动跳过
 - **任意步骤失败时打印手动下载链接**，按提示操作即可
 - 支持**断点续传**：下载中断后重新运行脚本即可继续，不会从头开始
@@ -83,9 +83,11 @@ download_tools.bat
 
 ### 方式二：手动下载
 
-#### 1. Vulkan SDK（编译 VkSplat 必需）
+#### 1. Vulkan SDK（仅重新编译 VkSplat 时需要）
 
-下载并安装 [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) for Windows。
+> **默认无需安装。** 仓库已包含 Python 3.10 和 3.11 的预编译 `vksplat.cp*-win_amd64.pyd`，`download_tools.bat` 会自动使用，无需编译。仅当你修改了 VkSplat C++ 源码或使用其他 Python 版本时，才需要安装 Vulkan SDK + MSVC 重新编译。
+
+如需重新编译，下载并安装 [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) for Windows。
 
 安装后确认环境变量 `VULKAN_SDK` 指向 SDK 根目录（如 `C:\VulkanSDK\1.3.x.x.x`），VkSplat 的 `setup.py` 会自动查找。
 
@@ -118,11 +120,13 @@ tools/
     └── vk_gaussian_splatting.exe
 ```
 
-#### 4. VkSplat（Vulkan 训练后端，需编译）
+#### 4. VkSplat（Vulkan 训练后端）
 
 VkSplat 源码已**直接包含在仓库中**（`tools/vksplat/`），包含本地定制修改（旋转矩阵对齐、simple_trainer 调整等），无需 submodule 或 patch。
 
-使用 [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge)（Miniforge 的 mamba 版）从 `environment.yaml` 创建环境并编译安装：
+**预编译版本已包含：** `tools/vksplat/vksplat/` 下提供了 `vksplat.cp310-win_amd64.pyd` 和 `vksplat.cp311-win_amd64.pyd`，分别对应 Python 3.10 和 3.11。`download_tools.bat` 会自动检测匹配的版本并直接使用，**无需安装 Vulkan SDK 或 MSVC**。
+
+使用 [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge)（Miniforge 的 mamba 版）从 `environment.yaml` 创建环境并安装：
 
 ```bash
 # 从 environment.yaml 创建环境（mamba 比 conda 快 10 倍）
@@ -131,12 +135,13 @@ mamba env create -f environment.yaml
 # 激活环境
 mamba activate vksplat
 
-# 编译安装 VkSplat（需要 Vulkan SDK + MSVC）
+# 安装 VkSplat（自动使用预编译 .pyd，无需编译）
+# 若需重新编译（修改了 C++ 源码），才需要 Vulkan SDK + MSVC
 pip install -e tools/vksplat/vksplat --no-build-isolation
 ```
 
-> 若 `pip install -e .` 报找不到 Vulkan，请确认 `VULKAN_SDK` 环境变量已设置。
-> 编译成功后可在 Python 中 `import vksplat` 验证。
+> 若使用的 Python 版本与预编译 `.pyd` 不匹配，`pip install -e .` 会尝试编译，此时需要安装 Vulkan SDK + MSVC。
+> 安装成功后可在 Python 中 `import vksplat` 验证。
 >
 > 没有 mamba？用 conda 也一样：`conda env create -f environment.yaml`
 
@@ -240,8 +245,8 @@ GUI 内部按以下步骤执行：
 **Q: 启动时提示找不到 Python？**
 A: 确保已安装 Miniforge（或 Miniconda/Anaconda）并创建了 `vksplat` 环境。`run.bat` 会自动搜索常见安装路径，也可手动编辑 `run.bat` 指定 Python 路径。
 
-**Q: VkSplat 编译失败，提示找不到 Vulkan？**
-A: 确认已安装 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)，且环境变量 `VULKAN_SDK` 指向 SDK 根目录。
+**Q: VkSplat 安装失败？**
+A: 仓库已包含 Python 3.10/3.11 的预编译 `.pyd`，`download_tools.bat` 会自动使用，无需编译。若你使用了其他 Python 版本或修改了 C++ 源码需要重新编译，请安装 [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) 和 MSVC（Visual Studio Build Tools，勾选"使用 C++ 的桌面开发"），并设置 `VULKAN_SDK` 环境变量。
 
 **Q: 训练时 GPU 超时（TDR）？**
 A: 核显用户请确认 cap_max 已自动设为 500,000；若仍超时，可在高级选项中手动降低高斯上限。

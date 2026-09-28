@@ -432,12 +432,12 @@ tools/*
 # VkSplat source is tracked directly (not submodule)
 !tools/vksplat
 # Ignore VkSplat build artifacts
-tools/vksplat/**/*.pyd
-tools/vksplat/**/*.so
 tools/vksplat/**/build/
 tools/vksplat/**/__pycache__/
 tools/vksplat/**/*.egg-info/
 tools/vksplat/**/.pytest_cache/
+# Prebuilt .pyd files are tracked (so users don't need Vulkan SDK + MSVC)
+# tools/vksplat/**/*.pyd  ← intentionally NOT ignored
 
 # Python GUI
 gui/__pycache__/

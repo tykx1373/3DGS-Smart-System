@@ -8,5 +8,7 @@ dist/
 *.egg-info
 *.py[cod]
 *.so
+# Prebuilt .pyd files are tracked for end-users (no compile needed)
+!vksplat/*.pyd
 
 vksplat/third_party/glm

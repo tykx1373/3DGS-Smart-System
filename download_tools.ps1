@@ -488,14 +488,40 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
 
     if ($condaPython) {
         Write-Host "  Using env python: $condaPython"
-        Write-Host "  Installing vksplat (compiles C++ extension, may take a few minutes)..."
-        cmd /c "`"$condaPython`" -m pip install -e `"$vksplatPy`" --no-build-isolation 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "[OK] vksplat installed successfully" -ForegroundColor Green
+
+        # Determine Python ABI version (e.g. 310 for Python 3.10)
+        $pyVer = & $condaPython -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>$null
+        $prebuiltPyd = Join-Path $vksplatPy "vksplat.cp$pyVer-win_amd64.pyd"
+
+        if (Test-Path $prebuiltPyd) {
+            # Prebuilt .pyd matches this Python version - skip compilation
+            Write-Host "  Found prebuilt vksplat.cp$pyVer-win_amd64.pyd, skipping compilation..."
+            # Create .pth in site-packages so Python finds vksplat from source dir
+            $sitePkg = & $condaPython -c "import site; print(site.getsitepackages()[0])" 2>$null
+            $pthFile = Join-Path $sitePkg "vksplat_source.pth"
+            $vksplatPy | Out-File -FilePath $pthFile -Encoding ascii -NoNewline
+            # Verify import works
+            & $condaPython -c "import vksplat; print('vksplat import OK')" 2>&1 | ForEach-Object { Write-Host "  $_" }
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[OK] vksplat installed (prebuilt)" -ForegroundColor Green
+            } else {
+                Write-Host "[WARN] vksplat import failed. Try: pip install -e tools/vksplat/vksplat --no-build-isolation" -ForegroundColor Yellow
+                $failed += "VkSplat-build"
+            }
         } else {
-            Write-Host "[WARN] vksplat install failed. Try manually:" -ForegroundColor Yellow
-            Write-Host "       pip install -e tools/vksplat/vksplat --no-build-isolation"
-            $failed += "VkSplat-build"
+            # No matching prebuilt .pyd - need to compile (requires Vulkan SDK + MSVC)
+            Write-Host "  No prebuilt .pyd for Python $pyVer. Compiling C++ extension..."
+            Write-Host "  (Requires Vulkan SDK + MSVC. Install from: https://vulkan.lunarg.com/sdk/home#windows)"
+            cmd /c "`"$condaPython`" -m pip install -e `"$vksplatPy`" --no-build-isolation 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[OK] vksplat installed (compiled)" -ForegroundColor Green
+            } else {
+                Write-Host "[WARN] vksplat install failed. Requires Vulkan SDK + MSVC:" -ForegroundColor Yellow
+                Write-Host "       Vulkan SDK: https://vulkan.lunarg.com/sdk/home#windows"
+                Write-Host "       MSVC: Visual Studio Build Tools with 'Desktop development with C++'"
+                Write-Host "       pip install -e tools/vksplat/vksplat --no-build-isolation"
+                $failed += "VkSplat-build"
+            }
         }
     }
 }
