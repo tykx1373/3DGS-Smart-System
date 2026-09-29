@@ -44,7 +44,7 @@
 | 操作系统 | Windows 10 / 11 (x64) |
 | GPU | 任意支持 Vulkan 1.3+ 的显卡（独显或核显均可） |
 | 内存 | 8 GB 以上（核显建议 16 GB） |
-| Python | 3.9 ~ 3.12（推荐 [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge) 管理环境） |
+| Python | 3.9 ~ 3.12（推荐 [Miniforge](https://github.com/conda-forge/miniforge) 管理环境，自带 mamba 加速） |
 | 编译器 | 无需安装（已包含预编译 VkSplat `.pyd`）。仅当需重新编译时才需要 MSVC v143+ + Vulkan SDK |
 
 ---
@@ -128,7 +128,7 @@ VkSplat 源码已**直接包含在仓库中**（`tools/vksplat/`），包含本�
 
 **预编译版本已包含：** `tools/vksplat/vksplat/` 下提供了 `vksplat.cp310-win_amd64.pyd` 和 `vksplat.cp311-win_amd64.pyd`，分别对应 Python 3.10 和 3.11。`download_tools.bat` 会自动检测匹配的版本并直接使用，**无需安装 Vulkan SDK 或 MSVC**。
 
-使用 [Mambaforge](https://github.com/conda-forge/miniforge#mambaforge)（Miniforge 的 mamba 版）从 `environment.yaml` 创建环境并安装：
+使用 [Miniforge](https://github.com/conda-forge/miniforge) 从 `environment.yaml` 创建环境并安装。Miniforge 自带 `mamba` 命令（比 `conda` 快约 10 倍）：
 
 ```bash
 # 从 environment.yaml 创建环境（mamba 比 conda 快 10 倍）
