@@ -9,6 +9,7 @@ dependencies:
   - tqdm>=4.65
   - pip:
       - opencv-python-headless>=4.8
+      - customtkinter>=5.2
       # torch (CPU-only) and torchmetrics are installed separately by
       # download_tools.ps1 to ensure the CPU wheel is used (no CUDA bloat).
       # VkSplat is installed by download_tools.bat using prebuilt .pyd (no compile needed).
