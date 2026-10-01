@@ -454,4 +454,7 @@ env/
 # Sample datasets (large, optional — uncomment to track)
 sample/
 
+# Personal learning notes (not part of the repo)
+notes/
+
 
