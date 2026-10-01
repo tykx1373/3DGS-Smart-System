@@ -318,12 +318,24 @@ class QuickSplatApp:
         self.progress = ctk.CTkProgressBar(prog)
         self.progress.set(0)
         self.progress.pack(fill="x", pady=(6, 0))
+        # 进度条下方的数值显示
+        self.progress_detail_var = tk.StringVar(value="")
+        ctk.CTkLabel(prog, textvariable=self.progress_detail_var,
+                     font=FONT_HINT, text_color="#888").pack(anchor="w")
 
-        # ---- 日志 ----
-        log_outer, log_inner = _make_group(self.root, "运行日志")
-        log_outer.pack(fill="both", expand=True, padx=16, pady=6)
+        # ---- 日志（默认折叠） ----
+        self.log_toggle_var = tk.StringVar(value="▶ 运行日志（需要时展开）")
+        self.log_toggle_btn = ctk.CTkButton(self.root, textvariable=self.log_toggle_var,
+                                            command=self._toggle_log, height=32,
+                                            fg_color="transparent", border_width=1,
+                                            text_color=("#3b82f6", "#60a5fa"))
+        self.log_toggle_btn.pack(fill="x", padx=16, pady=(2, 0))
+
+        self.log_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        log_outer, log_inner = _make_group(self.log_frame, "运行日志")
+        log_outer.pack(fill="both", expand=True)
         self.log = ctk.CTkTextbox(log_inner, state="disabled", font=FONT_LOG,
-                                  corner_radius=6)
+                                  corner_radius=6, height=180)
         self.log.pack(fill="both", expand=True)
         # 日志级别颜色标签
         self.log.tag_config("ok", foreground="#22c55e")
@@ -331,8 +343,19 @@ class QuickSplatApp:
         self.log.tag_config("fail", foreground="#ef4444")
         self.log.tag_config("dbg", foreground="#9ca3af")
 
+        self._log_visible = False
         self._apply_quality_preset()
         self._refresh_backend_opts()
+
+    def _toggle_log(self):
+        if self._log_visible:
+            self.log_frame.pack_forget()
+            self.log_toggle_var.set("▶ 运行日志（需要时展开）")
+            self._log_visible = False
+        else:
+            self.log_frame.pack(fill="both", expand=True, padx=16, pady=6)
+            self.log_toggle_var.set("▼ 运行日志（点击收起）")
+            self._log_visible = True
 
     # --------------------------------------------------- advanced panel ----
     def _build_advanced_panel(self):
@@ -623,6 +646,31 @@ class QuickSplatApp:
     # --------------------------------------------------------------- log ----
     def _log(self, text):
         t = text.strip()
+        # 识别 PROGRESS 标记：PROGRESS: step/total elapsed_sec eta_sec num_splats
+        if t.startswith("PROGRESS:"):
+            try:
+                parts = t.split()
+                # parts: ['PROGRESS:', 'step/total', 'elapsed', 'eta', 'num']
+                step_str, total_str = parts[1].split("/")
+                step = int(step_str)
+                total = int(total_str)
+                elapsed = float(parts[2])
+                eta = float(parts[3])
+                num_splats = int(parts[4])
+                pct = step / total if total > 0 else 0
+                self.root.after(0, self.progress.set, pct)
+                if eta > 0:
+                    self.root.after(0, self.progress_detail_var.set,
+                        f"进度 {pct*100:.0f}%  ·  {step}/{total} 步  ·  "
+                        f"已用 {elapsed/60:.1f} 分钟  ·  剩余 {eta/60:.1f} 分钟  ·  "
+                        f"{num_splats} 个高斯")
+                else:
+                    self.root.after(0, self.progress_detail_var.set,
+                        f"进度 {pct*100:.0f}%  ·  {step}/{total} 步  ·  "
+                        f"已用 {elapsed/60:.1f} 分钟  ·  {num_splats} 个高斯")
+                return  # 不写到日志
+            except Exception:
+                pass
         low = t.lower()
         for p in ("[fail]", "[error]", "[warn]", "[dbg]", "[debug]", "[info]", "[ok]"):
             if low.startswith(p):
@@ -684,7 +732,7 @@ class QuickSplatApp:
         return exe, env
 
     # ----------------------------------------------------------- run cmd ----
-    def run_cmd(self, cmd_list, env=None, cwd=None):
+    def run_cmd(self, cmd_list, env=None, cwd=None, graceful_ws_dir=None):
         display = " ".join(f'"{c}"' if (" " in c or c == "") else c for c in cmd_list)
         self._log(">>> " + display)
         try:
@@ -696,13 +744,35 @@ class QuickSplatApp:
             self._log(f"[FAIL] 启动失败: {e}")
             return False
 
+        graceful_requested = False
+        graceful_deadline = None
         for line in self.current_proc.stdout:
-            if self.stop_flag:
+            if self.stop_flag and not graceful_requested:
+                if graceful_ws_dir:
+                    # 训练进程：写 STOP 文件，等它自己保存进度后退出
+                    try:
+                        with open(os.path.join(graceful_ws_dir, "STOP"), "w") as f:
+                            f.write("stop")
+                        graceful_requested = True
+                        graceful_deadline = time.time() + 60
+                        self._log("[WARN] 已请求安全停止，等待训练保存进度...")
+                        self.root.after(0, self._set_status, "正在保存训练进度，请稍候...")
+                        continue  # 继续读输出，等进程自己退出
+                    except Exception:
+                        pass
                 try:
                     self.current_proc.terminate()
                 except Exception:
                     pass
                 self._log("[WARN] 已被用户停止。")
+                return False
+            # 安全网：优雅停止后超过 60 秒进程仍未退出，强制终止
+            if graceful_requested and graceful_deadline and time.time() > graceful_deadline:
+                try:
+                    self.current_proc.terminate()
+                except Exception:
+                    pass
+                self._log("[WARN] 等待超时，已强制终止训练进程（进度回退到上一个恢复点）。")
                 return False
             line = line.rstrip()
             if line:
@@ -710,6 +780,9 @@ class QuickSplatApp:
         self.current_proc.wait()
         rc = self.current_proc.returncode
         self.current_proc = None
+        if graceful_requested:
+            self._log("[WARN] 训练已安全停止，进度已保存。")
+            return False
         if rc != 0:
             self._log(f"[FAIL] 退出码: {rc}")
             return False
@@ -758,16 +831,21 @@ class QuickSplatApp:
     # -------------------------------------------------------- VkSplat py ----
     def _build_vksplat_script(self, dataset_dir, image_dir, sparse_dir,
                               output_dir, train_steps, cache_device,
-                              device_id=-1, cap_max=1000000):
+                              device_id=-1, cap_max=1000000, resume_output_dir=None):
+        resume_line = f", resume_output_dir=r\"{resume_output_dir}\"" if resume_output_dir else ""
         return f"""# -*- coding: utf-8 -*-
 import os, sys
 sys.path.insert(0, os.path.abspath(r"{os.path.join(PROJECT_ROOT, 'tools', 'vksplat', 'vksplat')}"))
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+# 强制 UTF-8 输出，避免中文日志在 GUI 中乱码
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
 
 import simple_trainer
 simple_trainer.TRAIN_DEVICE = {device_id}
 
-from simple_trainer import MCMCTrainerConfig, train_main
+from simple_trainer import MCMCTrainerConfig, TrainerConfig, train_main
 
 if __name__ == "__main__":
     config = MCMCTrainerConfig(
@@ -782,7 +860,7 @@ if __name__ == "__main__":
         image_cache_device="{cache_device}",
         cap_max={cap_max},
     )
-    train_main(config)
+    train_main(config{resume_line})
 """
 
     def _detect_gpu(self, vksp_py):
@@ -811,12 +889,49 @@ if __name__ == "__main__":
         except Exception:
             return False
 
+    def _ask_resume(self):
+        """主线程调用：检测工作区里的 checkpoint，询问用户是否继续训练。"""
+        ws_dir = resolve_path(self.ws_var.get().strip() or "")
+        if not ws_dir or not os.path.isdir(ws_dir):
+            return
+        step_path = os.path.join(ws_dir, "checkpoint.ply.step")
+        ply_path = os.path.join(ws_dir, "checkpoint.ply")
+        if not (os.path.isfile(ply_path) and os.path.isfile(step_path)):
+            # 清理旧版本的 npz checkpoint（已废弃）
+            legacy = os.path.join(ws_dir, "checkpoint.npz")
+            if os.path.isfile(legacy):
+                try:
+                    os.remove(legacy)
+                except Exception:
+                    pass
+            return
+        try:
+            step = int(open(step_path, encoding="utf-8").read().strip())
+        except Exception:
+            return
+        choice = messagebox.askyesno(
+            "检测到上次未完成的训练",
+            f"在该工作区发现训练中断的恢复点（step={step}）。\n\n"
+            f"• 是 → 从 step {step} 继续训练\n"
+            f"• 否 → 从头开始（删除恢复点）",
+        )
+        if not choice:
+            for p in (ply_path, step_path):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
     def run_vksplat_train(self, ws_dir, img_dir, sparse_zero, output_ply):
         vksp_py = self.vksplat_py_var.get().strip() or DEFAULT_VKSPLAT_PY
         vksp_py = resolve_path(vksp_py)
         if not os.path.exists(vksp_py):
             self._log(f"[FAIL] VkSplat Python 未找到: {vksp_py}")
             return False
+
+        # checkpoint 询问已在主线程完成（_ask_resume），此处只需日志
+        if os.path.isfile(os.path.join(ws_dir, "checkpoint.ply")):
+            self._log("[INFO] 检测到训练恢复点，将从中断处继续训练。")
 
         device_id, is_integrated, gpu_name = self._detect_gpu(vksp_py)
         quality = self.quality_var.get()
@@ -856,6 +971,7 @@ if __name__ == "__main__":
             sparse_dir=sparse_dir, output_dir=output_dir,
             train_steps=steps, cache_device=cache,
             device_id=device_id, cap_max=cap_max,
+            resume_output_dir=ws_dir.replace("\\", "/"),
         )
 
         tmp_path = os.path.join(tempfile.gettempdir(), "vksplat_train_generated.py")
@@ -868,7 +984,7 @@ if __name__ == "__main__":
 
         self._log(f"[INFO] 生成的训练脚本: {tmp_path}")
         cwd = ws_dir
-        ok = self.run_cmd([vksp_py, "-u", tmp_path], cwd=cwd)
+        ok = self.run_cmd([vksp_py, "-u", tmp_path], cwd=cwd, graceful_ws_dir=ws_dir)
         try:
             os.remove(tmp_path)
         except Exception:
@@ -1061,8 +1177,15 @@ if __name__ == "__main__":
             if do_train:
                 self.root.after(0, self._set_step, 2)
                 self.root.after(0, self._set_status, "正在训练 3D 模型...（请耐心等待）")
+                self.root.after(0, self.progress.stop)
+                self.root.after(0, self.progress.configure, {"mode": "determinate"})
+                self.root.after(0, self.progress.set, 0)
+                self.root.after(0, self.progress_detail_var.set, "准备训练...")
                 if not self._run_train(ws_dir, img_dir, sparse_zero, output_ply):
-                    self.root.after(0, self._set_status, "模型训练失败，请查看日志。")
+                    if self.stop_flag:
+                        self.root.after(0, self._set_status, "训练已安全停止，进度已保存，下次可继续。")
+                    else:
+                        self.root.after(0, self._set_status, "模型训练失败，请查看日志。")
                     return
 
                 if self.stop_flag:
@@ -1086,12 +1209,14 @@ if __name__ == "__main__":
             self.root.after(0, self._on_done)
 
     def start_pipeline(self):
+        self._ask_resume()
         self.stop_flag = False
         self._set_params_enabled(False)
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.progress.configure(mode="indeterminate")
         self.progress.start()
+        self.progress_detail_var.set("")
         threading.Thread(target=self.pipeline_thread, kwargs={"do_colmap": True, "do_train": True},
                          daemon=True).start()
 
@@ -1102,27 +1227,27 @@ if __name__ == "__main__":
         self.stop_btn.configure(state="normal")
         self.progress.configure(mode="indeterminate")
         self.progress.start()
+        self.progress_detail_var.set("")
         threading.Thread(target=self.pipeline_thread, kwargs={"do_colmap": True, "do_train": False},
                          daemon=True).start()
 
     def start_train_only(self):
+        self._ask_resume()
         self.stop_flag = False
         self._set_params_enabled(False)
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self.progress.configure(mode="indeterminate")
-        self.progress.start()
+        self.progress.configure(mode="determinate")
+        self.progress.set(0)
+        self.progress_detail_var.set("准备训练...")
         threading.Thread(target=self.pipeline_thread, kwargs={"do_colmap": False, "do_train": True},
                          daemon=True).start()
 
     def stop_pipeline(self):
         self.stop_flag = True
-        if self.current_proc:
-            try:
-                self.current_proc.terminate()
-            except Exception:
-                pass
         self._log("[WARN] 用户请求停止...")
+        # 注意：不要在这里 terminate —— 训练进程由 run_cmd 通过 STOP 文件
+        # 优雅停止（保存进度），其他进程（COLMAP 等）由 run_cmd 强制终止。
 
     def _on_done(self):
         self.stop_flag = False

@@ -109,11 +109,101 @@ def join_dir(dir0, dir1):
     return dir
 
 
+CHECKPOINT_FILE = "checkpoint.ply"
+CHECKPOINT_STEP_FILE = "checkpoint.ply.step"
+CHECKPOINT_INTERVAL = 1000  # 每 1000 步存一次
+STOP_FILE = "STOP"  # GUI 安全停止标志文件
+
+# write_ply 输出的 SH 字段排列（内部 flat 索引 -> 文件列偏移）
+_PLY_SH_PERMUTE = [0, 1, 2, 3, 18, 33, 4, 19, 34, 5, 20, 35, 6, 21, 36,
+                   7, 22, 37, 8, 23, 38, 9, 24, 39, 10, 25, 40, 11, 26, 41,
+                   12, 27, 42, 13, 28, 43, 14, 29, 44, 15, 30, 45, 16, 31, 46,
+                   17, 32, 47]
+
+
+def save_checkpoint(module, step, output_dir):
+    """用 write_ply 保存完整高斯状态，断点续训用。"""
+    ckpt_path = os.path.join(output_dir, CHECKPOINT_FILE)
+    try:
+        module.write_ply(ckpt_path)
+        with open(os.path.join(output_dir, CHECKPOINT_STEP_FILE), "w") as f:
+            f.write(str(step))
+        return True
+    except Exception as e:
+        PRINT(f"[WARN] checkpoint 保存失败: {e}")
+        return False
+
+
+def _parse_ply_vertices(path):
+    """解析 binary_little_endian PLY，返回 (N, n_props) float32 数组。"""
+    with open(path, "rb") as f:
+        header = []
+        while True:
+            line = f.readline()
+            if not line:
+                raise ValueError("PLY header 不完整")
+            header.append(line)
+            if line.strip() == b"end_header":
+                break
+        n_verts = 0
+        n_props = 0
+        for l in header:
+            if l.startswith(b"element vertex"):
+                n_verts = int(l.split()[-1])
+            elif l.startswith(b"property float"):
+                n_props += 1
+        data = np.fromfile(f, dtype="<f4", count=n_verts * n_props)
+    return data.reshape(n_verts, n_props)
+
+
+def load_checkpoint(module, output_dir):
+    """如果存在 checkpoint，恢复高斯参数和起始步数。"""
+    ckpt_path = os.path.join(output_dir, CHECKPOINT_FILE)
+    step_path = os.path.join(output_dir, CHECKPOINT_STEP_FILE)
+    if not (os.path.isfile(ckpt_path) and os.path.isfile(step_path)):
+        return 0
+    try:
+        step = int(open(step_path).read().strip())
+        data = _parse_ply_vertices(ckpt_path)  # (N, 59): xyz(3) sh(48) opacity scale(3) rot(4)
+        if data.shape[1] != 59:
+            raise ValueError(f"意外的 PLY 字段数: {data.shape[1]}")
+        n = len(data)
+        xyz_ws = np.ascontiguousarray(data[:, 0:3], dtype=np.float32)
+        # 反变换 SH 排列
+        sh_flat = np.zeros((n, 48), dtype=np.float32)
+        for i, col in enumerate(_PLY_SH_PERMUTE):
+            sh_flat[:, i] = data[:, 3 + col]
+        sh_coeffs = np.ascontiguousarray(sh_flat.reshape(n, 16, 3))
+        rotations = np.ascontiguousarray(data[:, 55:59], dtype=np.float32)
+        # write_ply 存的是 log(scale) 和 logit(opacity)，反变换回去
+        scales = np.ascontiguousarray(np.exp(data[:, 52:55]), dtype=np.float32)
+        opacities = np.ascontiguousarray(
+            1.0 / (1.0 + np.exp(-data[:, 51:52])), dtype=np.float32)
+        # 注意：必须按 C++ 签名顺序位置传参 (xyz, rotations, scales, opacities, sh)。
+        # .def 里声明的 py::arg 名字与 C++ 参数顺序错位，不能用关键字传参！
+        module.set_gauss_params(xyz_ws, rotations, scales, opacities, sh_coeffs)
+        PRINT(f"[INFO] 从 checkpoint 恢复，继续训练 step={step}")
+        return step
+    except Exception as e:
+        PRINT(f"[WARN] checkpoint 加载失败，从头开始: {e}")
+        return 0
+
+
+def remove_checkpoint(output_dir):
+    for f in (CHECKPOINT_FILE, CHECKPOINT_STEP_FILE, "checkpoint.npz"):
+        try:
+            p = os.path.join(output_dir, f)
+            if os.path.isfile(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+
 def PRINT(*args, **kargs):
     print(*args, **kargs, flush=True)
 
 
-def train(config: TrainerConfig):
+def train(config: TrainerConfig, resume_output_dir: str = None):
     # from build import vksplat  # or build.Debug, build.Release for MSVC
     import vksplat
 
@@ -135,6 +225,17 @@ def train(config: TrainerConfig):
         json.dump(asdict(config), fp, indent=4)
     with open(os.path.join(config.output_dir, 'train.json'), 'w') as fp:
         json.dump(train_meta, fp, indent=4)  # do this so we can get relevant info if training crashes
+
+    # 尝试从 checkpoint 恢复
+    ckpt_dir = resume_output_dir if resume_output_dir else config.output_dir
+    start_step = load_checkpoint(module, ckpt_dir)
+    # 清理上次残留的 STOP 文件
+    stale_stop = os.path.join(ckpt_dir, STOP_FILE)
+    if os.path.isfile(stale_stop):
+        try:
+            os.remove(stale_stop)
+        except Exception:
+            pass
 
     lock = nullcontext()
     module_alive = True
@@ -204,13 +305,34 @@ def train(config: TrainerConfig):
     # train
     t0 = perf_counter()
     shuffle_idx = list(range(module.num_train))
-    for step in tqdm(range(config.train_steps), "Training"):
+    for step in tqdm(range(start_step, config.train_steps), "Training", initial=start_step, total=config.train_steps):
         if step > 0 and step % len(shuffle_idx) == 0:
             # random.seed(step)
             random.shuffle(shuffle_idx)
         image_idx = shuffle_idx[step % len(shuffle_idx)]
         with lock:
             module.train_step(image_idx, step)
+        # 用户请求安全停止：当场保存进度并干净退出
+        if os.path.isfile(os.path.join(ckpt_dir, STOP_FILE)):
+            save_checkpoint(module, step + 1, ckpt_dir)
+            try:
+                os.remove(os.path.join(ckpt_dir, STOP_FILE))
+            except Exception:
+                pass
+            PRINT(f"STOPPED: 已安全停止训练，进度保存至 step={step + 1}，下次训练将从此处继续。")
+            with lock:
+                module.cleanup()
+            os._exit(0)
+        # 进度标记，GUI 解析用
+        if (step + 1) % 100 == 0 or (step + 1) == config.train_steps:
+            elapsed = perf_counter() - t0
+            eta = elapsed / (step - start_step + 1) * (config.train_steps - step - 1) if step > start_step else 0
+            num_splats = len(module.opacities)
+            # PROGRESS: 当前步/总步数/已用时秒/预计剩余秒/高斯数
+            PRINT(f"PROGRESS: {step + 1}/{config.train_steps} {elapsed:.1f} {eta:.1f} {num_splats}")
+        # 定期存 checkpoint
+        if (step + 1) % CHECKPOINT_INTERVAL == 0:
+            save_checkpoint(module, step + 1, ckpt_dir)
     t1 = perf_counter()
     with lock:
         num_splats = len(module.opacities)
@@ -260,6 +382,8 @@ def train(config: TrainerConfig):
     PRINT("Writing PLY")
     with lock:
         module.write_ply(config.output_ply)
+    # 训练正常结束，清理 checkpoint（不再需要恢复）
+    remove_checkpoint(ckpt_dir)
     PRINT()
 
     # save renders
@@ -388,7 +512,7 @@ def eval(config: TrainerConfig):
 
 
 
-def train_main(config: TrainerConfig):
+def train_main(config: TrainerConfig, resume_output_dir: str = None):
 
     dataset_name = os.path.basename(os.path.normpath(config.dataset_dir))
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -401,7 +525,7 @@ def train_main(config: TrainerConfig):
     config.sparse_dir = join_dir(config.dataset_dir, config.sparse_dir)
     config.output_ply = os.path.join(config.output_dir, config.output_ply)
 
-    train(config)
+    train(config, resume_output_dir=resume_output_dir)
     eval(config)
 
 
