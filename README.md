@@ -274,12 +274,18 @@ A: 训练完成后 GUI 会自动用 VKGS 打开；也可手动用 `vk_gaussian_s
 
 ### 第三方依赖及许可证
 
-本项目通过**外部进程调用**以下开源工具（非代码链接），各组件保留其原始许可证：
-
-| 组件 | 用途 | 许可证 |
-|------|------|--------|
-| [COLMAP](https://github.com/colmap/colmap) | 稀疏重建（SfM/MVS） | BSD-3-Clause |
-| [VkSplat](https://github.com/harry7557558/vksplat) | 3DGS 训练后端（Vulkan） | Apache-2.0 |
-| [VKGS](https://github.com/nvpro-samples/vk_gaussian_splatting) | 实时渲染查看器 | MIT |
+| 组件 | 引入方式 | 用途 | 许可证 |
+|------|---------|------|--------|
+| [COLMAP](https://github.com/colmap/colmap) | 外部进程调用 | 稀疏重建（SfM/MVS） | BSD-3-Clause |
+| [VkSplat](https://github.com/harry7557558/vksplat) | 源码内置（`tools/vksplat/`） | 3DGS 训练后端（Vulkan） | Apache-2.0 |
+| [VKGS](https://github.com/nvpro-samples/vk_gaussian_splatting) | 外部进程调用 | 实时渲染查看器 | MIT |
+| [customtkinter](https://github.com/TomSchimansky/CustomTkinter) | Python 依赖 | GUI 界面 | MIT |
 
 各第三方工具的源代码请前往其各自仓库获取。
+
+**VkSplat 修改声明（Apache-2.0 §4(b) 要求）**：本项目对内置的 VkSplat 源码做了以下修改，均已在文件头部标注：
+
+- `vksplat/simple_trainer.py`：新增 PLY 断点保存/恢复、GUI 进度输出（PROGRESS 行）、STOP 文件安全停止
+- `vksplat/src/gs_trainer.cpp`：新增世界坐标系对齐旋转，使 COLMAP 位姿与 OpenSplat 约定一致
+
+VkSplat 原始许可证见 [tools/vksplat/LICENSE](tools/vksplat/LICENSE)，修改部分以 AGPL-3.0 双重授权。

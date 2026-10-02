@@ -1,3 +1,6 @@
+# 基于 Huawei VkSplat (Apache License 2.0) 修改，原始许可证见同目录上级 LICENSE。
+# Modifications (this project, AGPL-3.0): checkpoint save/resume via PLY,
+# PROGRESS output for GUI, STOP-file based graceful stop.
 from dataclasses import dataclass, field, asdict
 from typing import List, Tuple, Literal, Optional
 
