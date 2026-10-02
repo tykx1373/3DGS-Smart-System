@@ -1,5 +1,5 @@
 // 基于 Huawei VkSplat (Apache License 2.0) 修改，原始许可证见仓库根目录 LICENSE。
-// Modifications (this project, AGPL-3.0): applied world-space alignment rotation
+// Modifications (this project, Apache-2.0): applied world-space alignment rotation
 // R = [[1,0,0],[0,0,1],[0,-1,0]] to align COLMAP poses to OpenSplat convention.
 #include "gs_trainer.h"
 

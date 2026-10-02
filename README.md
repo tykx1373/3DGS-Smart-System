@@ -214,7 +214,7 @@ python gui/quick_gui.py
 ├── outputs/                    # 运行时生成：VkSplat 训练输出
 ├── logs/                       # 运行时生成：日志文件（自动轮转）
 ├── .gitignore
-├── LICENSE                     # AGPL-3.0
+├── LICENSE                     # Apache-2.0
 └── README.md
 ```
 
@@ -268,9 +268,9 @@ A: 训练完成后 GUI 会自动用 VKGS 打开；也可手动用 `vk_gaussian_s
 
 ## 许可证
 
-本项目采用 **GNU Affero General Public License v3.0 (AGPL-3.0)**，详见 [LICENSE](LICENSE)。
+本项目采用 **Apache License 2.0**，详见 [LICENSE](LICENSE)。
 
-> **AGPL-3.0 核心要求**：任何使用、修改、分发本项目代码的个人或组织，必须将其衍生作品以 AGPL-3.0 协议开源。即使仅通过网络提供服务（如部署为在线服务），也必须向用户提供完整的源代码。
+> **Apache-2.0 核心特点**：允许任意使用、修改、分发（包括商业闭源用途），只需保留版权与许可证声明；自带专利授权条款。衍生作品可选择任意许可证，不强制开源。
 
 ### 第三方依赖及许可证
 
@@ -288,4 +288,4 @@ A: 训练完成后 GUI 会自动用 VKGS 打开；也可手动用 `vk_gaussian_s
 - `vksplat/simple_trainer.py`：新增 PLY 断点保存/恢复、GUI 进度输出（PROGRESS 行）、STOP 文件安全停止
 - `vksplat/src/gs_trainer.cpp`：新增世界坐标系对齐旋转，使 COLMAP 位姿与 OpenSplat 约定一致
 
-VkSplat 原始许可证见 [tools/vksplat/LICENSE](tools/vksplat/LICENSE)，修改部分以 AGPL-3.0 双重授权。
+VkSplat 原始许可证见 [tools/vksplat/LICENSE](tools/vksplat/LICENSE)。
