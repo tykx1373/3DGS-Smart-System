@@ -644,6 +644,36 @@ PYBIND11_MODULE(vksplat, m) {
         .def("get_vram_breakdown", &VkSplat::get_vram_breakdown, "Get VRAM for each buffer at the current moment")
         .def("write_ply", &VkSplat::write_ply, "Save PLY file")
         .def("cleanup", &VkSplat::cleanup, "Cleanup Vulkan resources")
+        .def("enumerate_devices", [](VkSplat &self) {
+            py::list devices;
+            for (auto &caps : self.trainer.enumeratePhysicalDevices()) {
+                py::dict d;
+                d["index"] = caps.index;
+                d["name"] = caps.name;
+                d["vendor_id"] = caps.vendorId;
+                d["device_type"] = caps.deviceType;
+                d["api_version"] = caps.apiVersion;
+                d["driver_version"] = caps.driverVersion;
+                d["vram_bytes"] = caps.vramBytes;
+                d["queue_family_index"] = caps.queueFamilyIdx;
+                d["subgroup_size"] = caps.subgroupSize;
+                d["max_groups"] = std::vector<uint32_t>{ caps.maxGroups[0], caps.maxGroups[1], caps.maxGroups[2] };
+                d["max_threads"] = std::vector<uint32_t>{ caps.maxThreads[0], caps.maxThreads[1], caps.maxThreads[2] };
+                d["max_shared_memory"] = caps.maxSharedMemory;
+                d["has_int16"] = caps.hasInt16;
+                d["has_int64"] = caps.hasInt64;
+                d["has_float32_atomic_add"] = caps.hasFloat32AtomicAdd;
+                d["valid_subgroup_size"] = caps.validSubgroupSize;
+                d["valid_group_count"] = caps.validGroupCount;
+                d["valid_group_size"] = caps.validGroupSize;
+                d["valid_shared_size"] = caps.validSharedSize;
+                d["valid_queue_family"] = caps.validQueueFamily;
+                d["viable"] = caps.viable;
+                d["soft_viable"] = caps.softViable;
+                devices.append(d);
+            }
+            return devices;
+        }, "Enumerate Vulkan physical devices and their capabilities")
         .DEF_BUFFER_ARRAY(xyz_ws, float, 3, (size_t)-1, "mean")
         .DEF_BUFFER_ARRAY(sh_coeffs, float, 16, 3, "sh")
         .DEF_BUFFER_ARRAY(rotations, float, 4)

@@ -217,9 +217,10 @@ void VulkanGSPipeline::selectPhysicalDevice(int device_id) {
     std::vector<SelectedDevice> viableDevices;
     std::vector<SelectedDevice> softViableDevices;
 
-    const auto& [
-        minMaxGroups, minMaxThreads, minSharedMemory
-    ] = getDeviceRequirement();
+    const DeviceRequirement req = getDeviceRequirement();
+    const auto& minMaxGroups = req.minMaxGroups;
+    const auto& minMaxThreads = req.minMaxThreads;
+    const uint32_t minSharedMemory = req.minSharedMemory;
 
     printf(
         "Device Requirement: subgroup>=%d, maxGroups>=[%u %u %u], maxThreads>=[%u %u %u], maxShared>=%u, I16|I64|F32Atomic \n",
@@ -233,98 +234,37 @@ void VulkanGSPipeline::selectPhysicalDevice(int device_id) {
     for (size_t i = 0; i < devices.size(); i++) {
         VkPhysicalDevice& device = devices[i];
 
-        VkPhysicalDeviceProperties deviceProperties;
-        vkGetPhysicalDeviceProperties(device, &deviceProperties);
-        auto& limits = deviceProperties.limits;
-        uint32_t maxGroupsX = limits.maxComputeWorkGroupCount[0];
-        uint32_t maxGroupsY = limits.maxComputeWorkGroupCount[1];
-        uint32_t maxGroupsZ = limits.maxComputeWorkGroupCount[2];
-        uint32_t maxThreadsX = limits.maxComputeWorkGroupSize[0];
-        uint32_t maxThreadsY = limits.maxComputeWorkGroupSize[1];
-        uint32_t maxThreadsZ = limits.maxComputeWorkGroupSize[2];
-        bool validGroupCount[4] = {
-            maxGroupsX >= minMaxGroups[0],
-            maxGroupsY >= minMaxGroups[1],
-            maxGroupsZ >= minMaxGroups[2],
-        };
-        validGroupCount[3] = (validGroupCount[0] && validGroupCount[1] && validGroupCount[2]);
-        bool validGroupSize[4] = {
-            maxThreadsX >= minMaxThreads[0],
-            maxThreadsY >= minMaxThreads[1],
-            maxThreadsZ >= minMaxThreads[2],
-        };
-        validGroupSize[3] = (validGroupSize[0] && validGroupSize[1] && validGroupSize[2]);
-        bool validSharedSize = limits.maxComputeSharedMemorySize >= minSharedMemory;
-
-        // check subgroup size support
-        VkPhysicalDeviceSubgroupProperties subgroupProperties{};
-        subgroupProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
-        subgroupProperties.pNext = VK_NULL_HANDLE;
-        VkPhysicalDeviceProperties2KHR deviceProperties2{};
-        deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        deviceProperties2.pNext = &subgroupProperties;
-        vkGetPhysicalDeviceProperties2(device, &deviceProperties2);
-        bool validSubgroupSize = subgroupProperties.subgroupSize >= SUBGROUP_SIZE;
-
-        // check compute pipeline.support
-        uint32_t queue_family_count = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, nullptr);
-        std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
-        vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.data());
-        uint32_t queueFamilyIdx = (uint32_t)(-1);
-        for (uint32_t i = 0; i < queue_families.size(); i++) {
-            if ((queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
-                (queue_families[i].timestampValidBits != 0)
-            ) queueFamilyIdx = i;
-        }
-        bool validQueueFamily = ((int32_t)queueFamilyIdx != -1);
-
-        // check feature support
-        bool hasInt16 = true, hasInt64 = true, hasFloat32AtomicAdd = true;
-        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_float_features{};
-        atomic_float_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
-        atomic_float_features.pNext = VK_NULL_HANDLE;
-        VkPhysicalDeviceFeatures2 deviceFeatures2 = {};
-        deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-        deviceFeatures2.pNext = &atomic_float_features;
-        vkGetPhysicalDeviceFeatures2(device, &deviceFeatures2);
-        if (deviceFeatures2.features.shaderInt16 == VK_FALSE)
-            hasInt16 = false;
-        if (deviceFeatures2.features.shaderInt64 == VK_FALSE)
-            hasInt64 = false;
-        if (atomic_float_features.shaderBufferFloat32AtomicAdd == VK_FALSE)
-            hasFloat32AtomicAdd = false;
+        // Single source of truth: evaluation is shared with enumeratePhysicalDevices().
+        DeviceCaps caps = evaluatePhysicalDevice(device, (int)i, req);
 
         DeviceVendor vendor = DeviceVendor::Unknown;
-        if (deviceProperties.vendorID == 0x10DE)
+        if (caps.vendorId == 0x10DE)
             vendor = DeviceVendor::NVIDIA;
-        else if (deviceProperties.vendorID == 0x1002 || deviceProperties.vendorID == 0x1022)
+        else if (caps.vendorId == 0x1002 || caps.vendorId == 0x1022)
             vendor = DeviceVendor::AMD;
-        else if (deviceProperties.vendorID == 0x8086)
+        else if (caps.vendorId == 0x8086)
             vendor = DeviceVendor::Intel_R_;
-        else if (deviceProperties.vendorID == 0x13B5)
+        else if (caps.vendorId == 0x13B5)
             vendor = DeviceVendor::ARM;
-        else if (deviceProperties.vendorID == 0x5143)
+        else if (caps.vendorId == 0x5143)
             vendor = DeviceVendor::Qualcomm;
 
-        bool softViable = validSubgroupSize && validGroupSize[3] && validQueueFamily && hasInt16;
-        bool viable = softViable && validGroupCount[3] && validSharedSize && hasInt64 && hasFloat32AtomicAdd;
         SelectedDevice deviceInfo{
-            (int)i, device, queueFamilyIdx,
+            (int)i, device, caps.queueFamilyIdx,
             {
-                subgroupProperties.subgroupSize,
-                limits.maxComputeSharedMemorySize,
-                maxGroupsX, maxGroupsY, maxGroupsZ,
-                maxThreadsX, maxThreadsY, maxThreadsZ,
-                hasInt16, hasInt64, hasFloat32AtomicAdd,
-                vendor, deviceProperties.vendorID,
-                deviceProperties.deviceName
+                caps.subgroupSize,
+                caps.maxSharedMemory,
+                caps.maxGroups[0], caps.maxGroups[1], caps.maxGroups[2],
+                caps.maxThreads[0], caps.maxThreads[1], caps.maxThreads[2],
+                caps.hasInt16, caps.hasInt64, caps.hasFloat32AtomicAdd,
+                vendor, caps.vendorId,
+                caps.name
             }
         };
         bool is_excluded_device = (device_id >= 0 && device_id != (int)i);
-        if (viable && !is_excluded_device)
+        if (caps.viable && !is_excluded_device)
             viableDevices.push_back(deviceInfo);
-        else if (softViable && !is_excluded_device)
+        else if (caps.softViable && !is_excluded_device)
             softViableDevices.push_back(deviceInfo);
 
         printf(
@@ -334,29 +274,29 @@ void VulkanGSPipeline::selectPhysicalDevice(int device_id) {
             "maxThreads=[\033[%dm%u\033[m \033[%dm%u\033[m \033[%dm%u\033[m], "
             "maxShared=\033[%dm%u\033[m, "
             "\033[%dmI16\033[m|\033[%dmI64\033[m|\033[%dmF32Atomic\033[m\n",
-            (int)i, deviceProperties.deviceName,
-            viable ? kANSIGreen : softViable ? kANSIOrange : kANSIRed,
-            viable ? "VIABLE" : softViable ? "POSSIBLY VIABLE" : "NOT VIABLE",
-            validSubgroupSize ? kANSIDefault : kANSIRed, subgroupProperties.subgroupSize,
-            validGroupCount[0] ? kANSIDefault : kANSIOrange, maxGroupsX,
-            validGroupCount[1] ? kANSIDefault : kANSIOrange, maxGroupsY,
-            validGroupCount[2] ? kANSIDefault : kANSIOrange, maxGroupsZ,
-            validGroupSize[0] ? kANSIDefault : kANSIRed, maxThreadsX,
-            validGroupSize[1] ? kANSIDefault : kANSIRed, maxThreadsY,
-            validGroupSize[2] ? kANSIDefault : kANSIRed, maxThreadsZ,
-            validSharedSize ? kANSIDefault : kANSIOrange, limits.maxComputeSharedMemorySize,
-            hasInt16 ? kANSIDefault : kANSIRed,
-            hasInt64 ? kANSIDefault : kANSIOrange,
-            hasFloat32AtomicAdd ? kANSIDefault : kANSIOrange
+            caps.index, caps.name.c_str(),
+            caps.viable ? kANSIGreen : caps.softViable ? kANSIOrange : kANSIRed,
+            caps.viable ? "VIABLE" : caps.softViable ? "POSSIBLY VIABLE" : "NOT VIABLE",
+            caps.validSubgroupSize ? kANSIDefault : kANSIRed, caps.subgroupSize,
+            caps.validGroupCount ? kANSIDefault : kANSIOrange, caps.maxGroups[0],
+            caps.validGroupCount ? kANSIDefault : kANSIOrange, caps.maxGroups[1],
+            caps.validGroupCount ? kANSIDefault : kANSIOrange, caps.maxGroups[2],
+            caps.validGroupSize ? kANSIDefault : kANSIRed, caps.maxThreads[0],
+            caps.validGroupSize ? kANSIDefault : kANSIRed, caps.maxThreads[1],
+            caps.validGroupSize ? kANSIDefault : kANSIRed, caps.maxThreads[2],
+            caps.validSharedSize ? kANSIDefault : kANSIOrange, caps.maxSharedMemory,
+            caps.hasInt16 ? kANSIDefault : kANSIRed,
+            caps.hasInt64 ? kANSIDefault : kANSIOrange,
+            caps.hasFloat32AtomicAdd ? kANSIDefault : kANSIOrange
         );
-        if (softViable) {
-            if (!hasInt64)
+        if (caps.softViable) {
+            if (!caps.hasInt64)
                 printf("  \033[%dm%s\033[m\n", kANSIOrange, "WARNING: To use this device, shaders must be compiled with USE_EMULATED_INT64=1.");
-            if (!hasFloat32AtomicAdd)
+            if (!caps.hasFloat32AtomicAdd)
                 printf("  \033[%dm%s\033[m\n", kANSIOrange, "WARNING: To use this device, shaders must be compiled with USE_EMULATED_F32_ATOMIC=1.");
-            if (!validGroupCount[3])
+            if (!caps.validGroupCount)
                 printf("  \033[%dm%s\033[m\n", kANSIOrange, "WARNING: This device may not work if you want to train a large scene.");
-            if (!validSharedSize)
+            if (!caps.validSharedSize)
                 printf("  \033[%dm%s\033[m\n", kANSIOrange, "WARNING: This device does not have sufficient shared memory, which can involve undefined behavior.");
         }
         fflush(stdout);
@@ -390,6 +330,119 @@ void VulkanGSPipeline::selectPhysicalDevice(int device_id) {
         printf("\033[%dm%s\033[m\n", kANSIOrange, "WARNING: Int64 is not available. Make sure shaders are compiled with USE_EMULATED_INT64=1.");
     printf("\n");
     fflush(stdout);
+}
+
+VulkanGSPipeline::DeviceCaps VulkanGSPipeline::evaluatePhysicalDevice(
+    VkPhysicalDevice device, int index, const DeviceRequirement &req
+) {
+    DeviceCaps caps;
+    caps.index = index;
+
+    VkPhysicalDeviceProperties deviceProperties;
+    vkGetPhysicalDeviceProperties(device, &deviceProperties);
+    auto& limits = deviceProperties.limits;
+    caps.name = deviceProperties.deviceName;
+    caps.vendorId = deviceProperties.vendorID;
+    caps.deviceType = (int)deviceProperties.deviceType;
+    caps.apiVersion = deviceProperties.apiVersion;
+    caps.driverVersion = deviceProperties.driverVersion;
+
+    caps.maxGroups[0] = limits.maxComputeWorkGroupCount[0];
+    caps.maxGroups[1] = limits.maxComputeWorkGroupCount[1];
+    caps.maxGroups[2] = limits.maxComputeWorkGroupCount[2];
+    caps.maxThreads[0] = limits.maxComputeWorkGroupSize[0];
+    caps.maxThreads[1] = limits.maxComputeWorkGroupSize[1];
+    caps.maxThreads[2] = limits.maxComputeWorkGroupSize[2];
+    caps.maxSharedMemory = limits.maxComputeSharedMemorySize;
+
+    bool validGroupCount[4] = {
+        caps.maxGroups[0] >= req.minMaxGroups[0],
+        caps.maxGroups[1] >= req.minMaxGroups[1],
+        caps.maxGroups[2] >= req.minMaxGroups[2],
+    };
+    validGroupCount[3] = (validGroupCount[0] && validGroupCount[1] && validGroupCount[2]);
+    bool validGroupSize[4] = {
+        caps.maxThreads[0] >= req.minMaxThreads[0],
+        caps.maxThreads[1] >= req.minMaxThreads[1],
+        caps.maxThreads[2] >= req.minMaxThreads[2],
+    };
+    validGroupSize[3] = (validGroupSize[0] && validGroupSize[1] && validGroupSize[2]);
+    caps.validGroupCount = validGroupCount[3];
+    caps.validGroupSize = validGroupSize[3];
+    caps.validSharedSize = caps.maxSharedMemory >= req.minSharedMemory;
+
+    // check subgroup size support
+    VkPhysicalDeviceSubgroupProperties subgroupProperties{};
+    subgroupProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+    subgroupProperties.pNext = VK_NULL_HANDLE;
+    VkPhysicalDeviceProperties2KHR deviceProperties2{};
+    deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    deviceProperties2.pNext = &subgroupProperties;
+    vkGetPhysicalDeviceProperties2(device, &deviceProperties2);
+    caps.subgroupSize = subgroupProperties.subgroupSize;
+    caps.validSubgroupSize = subgroupProperties.subgroupSize >= SUBGROUP_SIZE;
+
+    // check compute pipeline support
+    uint32_t queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, nullptr);
+    std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.data());
+    caps.queueFamilyIdx = (uint32_t)(-1);
+    for (uint32_t i = 0; i < queue_families.size(); i++) {
+        if ((queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
+            (queue_families[i].timestampValidBits != 0)
+        ) caps.queueFamilyIdx = i;
+    }
+    caps.validQueueFamily = ((int32_t)caps.queueFamilyIdx != -1);
+
+    // check feature support
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomic_float_features{};
+    atomic_float_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+    atomic_float_features.pNext = VK_NULL_HANDLE;
+    VkPhysicalDeviceFeatures2 deviceFeatures2 = {};
+    deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    deviceFeatures2.pNext = &atomic_float_features;
+    vkGetPhysicalDeviceFeatures2(device, &deviceFeatures2);
+    caps.hasInt16 = (deviceFeatures2.features.shaderInt16 != VK_FALSE);
+    caps.hasInt64 = (deviceFeatures2.features.shaderInt64 != VK_FALSE);
+    caps.hasFloat32AtomicAdd = (atomic_float_features.shaderBufferFloat32AtomicAdd != VK_FALSE);
+
+    // VRAM: largest DEVICE_LOCAL memory heap
+    VkPhysicalDeviceMemoryProperties memoryProperties;
+    vkGetPhysicalDeviceMemoryProperties(device, &memoryProperties);
+    for (uint32_t i = 0; i < memoryProperties.memoryHeapCount; i++) {
+        if (memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            uint64_t heapSize = (uint64_t)memoryProperties.memoryHeaps[i].size;
+            if (heapSize > caps.vramBytes)
+                caps.vramBytes = heapSize;
+        }
+    }
+
+    caps.softViable = caps.validSubgroupSize && caps.validGroupSize && caps.validQueueFamily && caps.hasInt16;
+    caps.viable = caps.softViable && caps.validGroupCount && caps.validSharedSize && caps.hasInt64 && caps.hasFloat32AtomicAdd;
+    return caps;
+}
+
+std::vector<VulkanGSPipeline::DeviceCaps> VulkanGSPipeline::enumeratePhysicalDevices() {
+    // Use a temporary instance so this can run before initialize() without
+    // disturbing a pipeline that is already initialized.
+    VkInstance prev_instance = instance;
+    instance = VK_NULL_HANDLE;
+    createInstance();
+
+    uint32_t device_count = 0;
+    std::vector<DeviceCaps> result;
+    if (vkEnumeratePhysicalDevices(instance, &device_count, nullptr) == VK_SUCCESS && device_count > 0) {
+        std::vector<VkPhysicalDevice> devices(device_count);
+        vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
+        const DeviceRequirement req = getDeviceRequirement();
+        for (size_t i = 0; i < devices.size(); i++)
+            result.push_back(evaluatePhysicalDevice(devices[i], (int)i, req));
+    }
+
+    vkDestroyInstance(instance, nullptr);
+    instance = prev_instance;
+    return result;
 }
 
 std::map<std::string, std::variant<uint32_t, std::vector<uint32_t>, bool, std::string>>

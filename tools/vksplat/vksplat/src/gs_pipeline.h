@@ -71,6 +71,39 @@ public:
 
     std::map<std::string, std::variant<uint32_t, std::vector<uint32_t>, bool, std::string>> get_device_info() const;
 
+    // Capabilities of a single Vulkan physical device, evaluated against this
+    // pipeline's device requirement. Used by both device selection and the
+    // `enumerate_devices` Python binding (single source of truth).
+    struct DeviceCaps {
+        int index = 0;
+        std::string name;
+        uint32_t vendorId = 0;
+        int deviceType = 0;          // VkPhysicalDeviceType
+        uint32_t apiVersion = 0;
+        uint32_t driverVersion = 0;
+        uint64_t vramBytes = 0;      // largest DEVICE_LOCAL heap
+        uint32_t queueFamilyIdx = UINT32_MAX;
+        uint32_t subgroupSize = 0;
+        uint32_t maxGroups[3] = {0, 0, 0};
+        uint32_t maxThreads[3] = {0, 0, 0};
+        uint32_t maxSharedMemory = 0;
+        bool hasInt16 = false;
+        bool hasInt64 = false;
+        bool hasFloat32AtomicAdd = false;
+        bool validSubgroupSize = false;
+        bool validGroupCount = false;
+        bool validGroupSize = false;
+        bool validSharedSize = false;
+        bool validQueueFamily = false;
+        bool viable = false;         // fully viable
+        bool softViable = false;     // possibly viable (workaround shaders needed)
+    };
+
+    // Enumerate all Vulkan physical devices and evaluate them. Creates and
+    // destroys a temporary VkInstance, so it is safe to call before
+    // initialize() and does not disturb an already-initialized instance.
+    std::vector<DeviceCaps> enumeratePhysicalDevices();
+
 protected:
 
     struct DeviceRequirement {
@@ -80,6 +113,10 @@ protected:
     };
 
     virtual DeviceRequirement getDeviceRequirement() = 0;
+
+    // Evaluate one physical device against `req`. Shared by selectPhysicalDevice
+    // and enumeratePhysicalDevices.
+    DeviceCaps evaluatePhysicalDevice(VkPhysicalDevice device, int index, const DeviceRequirement &req);
 
     bool enableValidationLayer = false;
 

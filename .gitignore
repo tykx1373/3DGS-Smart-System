@@ -448,6 +448,9 @@ gui/quick_gui_config.json
 workspaces/
 outputs/
 
+# Environment self-check cache (regenerated on each machine)
+.syscheck.json
+
 # Project-local conda env (created by download_tools.bat)
 env/
 
