@@ -11,10 +11,12 @@ import os
 import sys
 import json
 import queue
+import re
 import shutil
 import subprocess
 import threading
 import tempfile
+import time
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
@@ -30,6 +32,11 @@ ctk.set_default_color_theme("blue")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))   # 3DGS/gui
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)                # 3DGS
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "quick_gui_config.json")
+
+# 环境自检模块（gui/syscheck.py），GUI 向导与 doctor.py 共用同一份判定
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+import syscheck  # noqa: E402
 
 # 所有默认路径相对 PROJECT_ROOT 存储
 DEFAULT_COLMAP = os.path.join("tools", "colmap-x64-windows-cuda", "COLMAP.bat")
@@ -84,6 +91,10 @@ DEFAULT_VKSPLAT_PY = _find_vksplat_python()
 
 TRAIN_BACKENDS = ["VkSplat"]
 
+# 训练崩溃自动续训
+TRAIN_MAX_RETRIES = 3   # 训练异常退出后，自动从恢复点续训的最大次数
+TRAIN_RETRY_DELAY = 10  # 每次续训前的等待秒数（给 GPU/驱动恢复留时间）
+
 # 字体常量
 FONT_TITLE = ("Microsoft YaHei UI", 16, "bold")
 FONT_STEP = ("Microsoft YaHei UI", 11, "bold")
@@ -91,7 +102,11 @@ FONT_STEP_SUB = ("Microsoft YaHei UI", 9)
 FONT_HINT = ("Microsoft YaHei UI", 9)
 FONT_BIG_BTN = ("Microsoft YaHei UI", 13, "bold")
 FONT_STATUS = ("Microsoft YaHei UI", 10)
-FONT_LOG = ("Consolas", 9)
+FONT_LOG = ("Consolas", 11)
+
+# tqdm 走 stderr 且用 \r 刷新，会把 stdout 的 PROGRESS 标记挤到行中间，
+# 因此这里不要求行首匹配，而是在整行内查找进度标记。
+_PROGRESS_RE = re.compile(r"PROGRESS:\s*(\d+)/(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)")
 
 
 class _GuiLogHandler(logging.Handler):
@@ -109,6 +124,8 @@ class _GuiLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
+            if getattr(record, "file_only", False):
+                return  # 进度类输出只进日志文件，界面用进度条体现
             if getattr(record, "is_ok", False):
                 prefix = "[OK]"
             else:
@@ -208,8 +225,13 @@ class QuickSplatApp:
         self.current_proc = None
         self.stop_flag = False
 
+        self._ips_recorded = False
         self._build_ui()
         self._poll_log()
+
+        # 首次运行：自动弹出环境自检向导，先给结论再让用户开跑
+        if syscheck.is_first_run():
+            self.root.after(400, lambda: self.open_syscheck(first_run=True))
 
     # ------------------------------------------------------------ UI build ----
     def _build_ui(self):
@@ -291,6 +313,11 @@ class QuickSplatApp:
         self.view_btn = ctk.CTkButton(btns, text="查看 3D 模型", width=120, height=40,
                                       command=self._open_viewer)
         self.view_btn.pack(side="left", padx=4)
+        self.doctor_btn = ctk.CTkButton(btns, text="环境自检", width=100, height=40,
+                                        command=self.open_syscheck,
+                                        fg_color="transparent", border_width=1,
+                                        text_color=("#3b82f6", "#60a5fa"))
+        self.doctor_btn.pack(side="left", padx=4)
         ctk.CTkLabel(btns, text="（可打开多个窗口对比，关闭窗口即退出）",
                      font=FONT_HINT, text_color="#888").pack(side="left", padx=10)
 
@@ -323,39 +350,43 @@ class QuickSplatApp:
         ctk.CTkLabel(prog, textvariable=self.progress_detail_var,
                      font=FONT_HINT, text_color="#888").pack(anchor="w")
 
-        # ---- 日志（默认折叠） ----
-        self.log_toggle_var = tk.StringVar(value="▶ 运行日志（需要时展开）")
-        self.log_toggle_btn = ctk.CTkButton(self.root, textvariable=self.log_toggle_var,
-                                            command=self._toggle_log, height=32,
-                                            fg_color="transparent", border_width=1,
-                                            text_color=("#3b82f6", "#60a5fa"))
-        self.log_toggle_btn.pack(fill="x", padx=16, pady=(2, 0))
+        # ---- 运行日志（独立窗口） ----
+        self.log_btn = ctk.CTkButton(self.root, text="运行日志", command=self.toggle_log_window,
+                                     height=32, fg_color="transparent", border_width=1,
+                                     text_color=("#3b82f6", "#60a5fa"))
+        self.log_btn.pack(fill="x", padx=16, pady=(2, 0))
+        self._build_log_window()
 
-        self.log_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        log_outer, log_inner = _make_group(self.log_frame, "运行日志")
-        log_outer.pack(fill="both", expand=True)
-        self.log = ctk.CTkTextbox(log_inner, state="disabled", font=FONT_LOG,
-                                  corner_radius=6, height=180)
-        self.log.pack(fill="both", expand=True)
+        self._apply_quality_preset()
+        self._refresh_backend_opts()
+
+    def _build_log_window(self):
+        """运行日志放在独立窗口，避免挤占主界面。"""
+        self.log_window = ctk.CTkToplevel(self.root)
+        self.log_window.title("运行日志")
+        self.log_window.geometry("780x500")
+        self.log_window.minsize(480, 300)
+        self.log_window.withdraw()
+        self.log_window.protocol("WM_DELETE_WINDOW", self._hide_log_window)
+
+        self.log = ctk.CTkTextbox(self.log_window, state="disabled", font=FONT_LOG,
+                                  corner_radius=6, wrap="none")
+        self.log.pack(fill="both", expand=True, padx=12, pady=12)
         # 日志级别颜色标签
         self.log.tag_config("ok", foreground="#22c55e")
         self.log.tag_config("warn", foreground="#f59e0b")
         self.log.tag_config("fail", foreground="#ef4444")
         self.log.tag_config("dbg", foreground="#9ca3af")
 
-        self._log_visible = False
-        self._apply_quality_preset()
-        self._refresh_backend_opts()
+    def _hide_log_window(self):
+        self.log_window.withdraw()
 
-    def _toggle_log(self):
-        if self._log_visible:
-            self.log_frame.pack_forget()
-            self.log_toggle_var.set("▶ 运行日志（需要时展开）")
-            self._log_visible = False
+    def toggle_log_window(self):
+        if self.log_window.winfo_viewable():
+            self.log_window.withdraw()
         else:
-            self.log_frame.pack(fill="both", expand=True, padx=16, pady=6)
-            self.log_toggle_var.set("▼ 运行日志（点击收起）")
-            self._log_visible = True
+            self.log_window.deiconify()
+            self.log_window.lift()
 
     # --------------------------------------------------- advanced panel ----
     def _build_advanced_panel(self):
@@ -645,18 +676,14 @@ class QuickSplatApp:
 
     # --------------------------------------------------------------- log ----
     def _log(self, text):
-        t = text.strip()
         # 识别 PROGRESS 标记：PROGRESS: step/total elapsed_sec eta_sec num_splats
-        if t.startswith("PROGRESS:"):
+        # 标记可能被 tqdm 的输出挤到行中间，故在整行内查找（取最后一个）
+        marks = _PROGRESS_RE.findall(text)
+        if marks:
             try:
-                parts = t.split()
-                # parts: ['PROGRESS:', 'step/total', 'elapsed', 'eta', 'num']
-                step_str, total_str = parts[1].split("/")
-                step = int(step_str)
-                total = int(total_str)
-                elapsed = float(parts[2])
-                eta = float(parts[3])
-                num_splats = int(parts[4])
+                step, total, elapsed, eta, num_splats = marks[-1]
+                step, total = int(step), int(total)
+                elapsed, eta, num_splats = float(elapsed), float(eta), int(num_splats)
                 pct = step / total if total > 0 else 0
                 self.root.after(0, self.progress.set, pct)
                 if eta > 0:
@@ -668,9 +695,23 @@ class QuickSplatApp:
                     self.root.after(0, self.progress_detail_var.set,
                         f"进度 {pct*100:.0f}%  ·  {step}/{total} 步  ·  "
                         f"已用 {elapsed/60:.1f} 分钟  ·  {num_splats} 个高斯")
-                return  # 不写到日志
+                # 取约 30% 处的累计平均 it/s 记一次，供下次耗时估算（仅一次）
+                if not self._ips_recorded and pct >= 0.3 and elapsed > 5:
+                    self._ips_recorded = True
+                    try:
+                        syscheck.record_measured_ips(self.quality_var.get(), step / elapsed)
+                    except Exception:
+                        pass
             except Exception:
                 pass
+            # 进度行完整写入日志文件，界面只由进度条/详情体现
+            self.logger.info(text.strip(), extra={"file_only": True})
+            return
+        # tqdm 刷新帧（形如 "Training:  3%|██  | 95/3000 [...]"）只进日志文件
+        if "%|" in text:
+            self.logger.info(text.strip(), extra={"file_only": True})
+            return
+        t = text.strip()
         low = t.lower()
         for p in ("[fail]", "[error]", "[warn]", "[dbg]", "[debug]", "[info]", "[ok]"):
             if low.startswith(p):
@@ -880,14 +921,148 @@ if __name__ == "__main__":
             return -1, False, "unknown"
 
     def _is_nvidia_gpu(self):
+        """是否装有 NVIDIA 显卡（决定 COLMAP 用 CUDA 还是 noCUDA 版本）。
+
+        用 PowerShell CIM 替代已弃用的 wmic（Win11 24H2 起移除）。
+        """
         try:
-            import subprocess as _sp
-            result = _sp.run(["wmic", "path", "win32_VideoController", "get", "name"],
-                             capture_output=True, text=True, timeout=10)
-            names = result.stdout.lower()
-            return ("nvidia" in names)
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "(Get-CimInstance Win32_VideoController).Name"],
+                capture_output=True, text=True, timeout=15,
+            )
+            return "nvidia" in (result.stdout or "").lower()
         except Exception:
             return False
+
+    # ------------------------------------------------------- syscheck UI ----
+    def open_syscheck(self, first_run=False):
+        """环境自检向导：检测 Vulkan/依赖/工具，并给出"能不能跑 + 预计耗时"。"""
+        win = ctk.CTkToplevel(self.root)
+        win.title("环境自检")
+        win.geometry("660x600")
+        win.transient(self.root)
+        win.after(50, win.lift)
+
+        head = "首次运行自检" if first_run else "环境自检"
+        ctk.CTkLabel(win, text=head, font=FONT_TITLE).pack(anchor="w", padx=16, pady=(14, 2))
+        ctk.CTkLabel(win, text="检查这台机器能不能跑（Vulkan 能力 / 依赖 / 工具 / 耗时预估）",
+                     font=FONT_HINT, text_color="#888").pack(anchor="w", padx=16)
+
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=10)
+        status = ctk.CTkLabel(win, text="正在检测…", font=FONT_STATUS,
+                              anchor="w", justify="left", wraplength=600)
+        status.pack(fill="x", padx=16)
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(fill="x", padx=16, pady=(6, 14))
+
+        def render(summary):
+            for w in body.winfo_children():
+                w.destroy()
+            for r in summary["results"]:
+                row = ctk.CTkFrame(body, fg_color="transparent")
+                row.pack(fill="x", pady=1)
+                ctk.CTkLabel(row, text=f"[{syscheck.STATUS_MARK[r.status]}]",
+                             text_color=syscheck.STATUS_COLOR[r.status], font=FONT_STEP,
+                             width=54, anchor="w").pack(side="left")
+                ctk.CTkLabel(row, text=r.name, font=FONT_STEP, width=106,
+                             anchor="w").pack(side="left")
+                ctk.CTkLabel(row, text=r.detail, font=FONT_HINT, anchor="w",
+                             wraplength=400, justify="left").pack(side="left", fill="x", expand=True)
+                if r.hint:
+                    ctk.CTkLabel(body, text=f"→ {r.hint}", font=FONT_HINT,
+                                 text_color="#f59e0b", anchor="w", wraplength=560,
+                                 justify="left").pack(fill="x", padx=(54, 0))
+            clean = summary["can_run"] and all(r.status == syscheck.OK
+                                               for r in summary["results"])
+            if summary["can_run"]:
+                dev = summary["device"]
+                kind = "核显" if summary["is_integrated"] else "独显"
+                txt = f"结论：你的机器可以跑。{dev['name']}（{kind}）"
+                if summary["laptop"]:
+                    txt += f"\n机型为笔记本：耗时估算已按 {syscheck.LAPTOP_PENALTY}x 保守放大。"
+                est = summary["est_total_sec"]
+                if est is not None:
+                    note = "实测修正" if summary["measured"] else "首次估算"
+                    txt += f"\n预计耗时（{note}）：{syscheck.format_duration(est)}"
+                if clean:
+                    txt += "\n全部检查通过，窗口将自动关闭。"
+                status.configure(text=txt, text_color="#22c55e")
+                if clean:
+                    # 环境没问题：展示结论片刻后自动关闭，不打断用户
+                    win.after(1800, lambda: win.winfo_exists() and win.destroy())
+            else:
+                blockers = summary["blockers"] or ["无可用 Vulkan 设备"]
+                status.configure(text="结论：跑不动。原因：" + "、".join(blockers),
+                                 text_color="#ef4444")
+
+        def detect():
+            status.configure(text="正在检测…", text_color="#888")
+
+            def work():
+                summary = syscheck.summarize(
+                    colmap_path=resolve_path(self.colmap_var.get().strip()),
+                    vkgs_exe=resolve_path(self.vkgs_var.get().strip()),
+                    quality=self.quality_var.get(),
+                    steps=self.vs_steps_var.get(),
+                )
+                syscheck.record_check()
+                self.root.after(0, render, summary)
+
+            threading.Thread(target=work, daemon=True).start()
+
+        ctk.CTkButton(btns, text="重新检测", width=110, command=detect).pack(side="left")
+        ctk.CTkButton(btns, text="关闭", width=110, command=win.destroy,
+                      fg_color="transparent", border_width=1,
+                      text_color=("#3b82f6", "#60a5fa")).pack(side="left", padx=8)
+        detect()
+
+    def _count_selected_images(self):
+        folder = resolve_path(self.img_var.get().strip()) if self.img_var.get().strip() else ""
+        if not folder or not os.path.isdir(folder):
+            return None
+        exts = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+        try:
+            return sum(1 for f in os.listdir(folder) if f.lower().endswith(exts))
+        except Exception:
+            return None
+
+    def _confirm_estimate(self, do_colmap):
+        """训练前给出耗时预估（笔记本保守放大），让用户决定是否继续。
+
+        这里只做轻量估算（不含 run_all 的重型子进程检查），避免主线程卡顿。
+        """
+        try:
+            quality = self.quality_var.get()
+            steps = self.vs_steps_var.get()
+            devices, _ = syscheck.enumerate_vulkan_devices()
+            best = syscheck.pick_device(devices)
+            laptop = syscheck.detect_laptop(devices)
+            measured = (syscheck.load_cache().get("measured_ips") or {}).get(quality)
+            est_train = syscheck.estimate_train_seconds(
+                best, quality, steps, measured_ips=measured, laptop=laptop) if best else None
+            if est_train is None:
+                return True
+            est_colmap = (syscheck.estimate_colmap_seconds(self._count_selected_images(), laptop=laptop)
+                          if do_colmap else None)
+            est = est_train + (est_colmap or 0)
+            lines = [f"预计耗时：{syscheck.format_duration(est)}"]
+            if do_colmap and est_colmap:
+                lines.append(f"  其中 COLMAP 约 {syscheck.format_duration(est_colmap)}，"
+                             f"训练约 {syscheck.format_duration(est_train)}")
+            else:
+                lines.append(f"  训练 {steps} 步（{quality}档）")
+            if laptop and not measured:
+                lines.append(f"  笔记本已按 {syscheck.LAPTOP_PENALTY}x 保守放大，实际可能更短")
+            lines.append("  基于上次实测速度" if measured
+                         else "  首次估算，跑过一次后会用实测速度修正")
+            lines.append("")
+            lines.append("是否继续？")
+            return messagebox.askyesno("耗时预估", "\n".join(lines))
+        except Exception:
+            return True
 
     def _ask_resume(self):
         """主线程调用：检测工作区里的 checkpoint，询问用户是否继续训练。"""
@@ -954,6 +1129,16 @@ if __name__ == "__main__":
             self._log(f"[INFO] 检测到独显: {gpu_name}，cap_max={cap_max}，图片缓存=gpu，分辨率={res_dir}")
 
         steps = self.vs_steps_var.get()
+        try:
+            laptop = syscheck.detect_laptop()
+            measured = (syscheck.load_cache().get("measured_ips") or {}).get(quality)
+            est = syscheck.estimate_train_seconds(
+                {"name": gpu_name}, quality, steps, measured_ips=measured, laptop=laptop)
+            note = "基于上次实测速度" if measured else "首次估算"
+            tail = "（笔记本已按保守系数放大）" if (laptop and not measured) else ""
+            self._log(f"[INFO] 预计训练耗时（{note}）：{syscheck.format_duration(est)}{tail}")
+        except Exception:
+            pass
         dataset_dir = ws_dir.replace("\\", "/")
         image_dir = res_dir
         sparse_dir = os.path.relpath(sparse_zero, ws_dir).replace("\\", "/")
@@ -984,7 +1169,30 @@ if __name__ == "__main__":
 
         self._log(f"[INFO] 生成的训练脚本: {tmp_path}")
         cwd = ws_dir
-        ok = self.run_cmd([vksp_py, "-u", tmp_path], cwd=cwd, graceful_ws_dir=ws_dir)
+        # 崩溃自动续训：训练进程异常退出且存在恢复点时，自动重跑（脚本会从 checkpoint 继续）
+        ok = False
+        retries = 0
+        while True:
+            ok = self.run_cmd([vksp_py, "-u", tmp_path], cwd=cwd, graceful_ws_dir=ws_dir)
+            if ok or self.stop_flag:
+                break  # 成功，或用户主动停止：不重试
+            ckpt_ply = os.path.join(ws_dir, "checkpoint.ply")
+            ckpt_step = os.path.join(ws_dir, "checkpoint.ply.step")
+            if not (os.path.isfile(ckpt_ply) and os.path.isfile(ckpt_step)):
+                self._log("[WARN] 训练异常退出，但没有可用恢复点（崩溃在首个存档点之前），无法自动续训。")
+                break
+            if retries >= TRAIN_MAX_RETRIES:
+                self._log(f"[FAIL] 已自动续训 {TRAIN_MAX_RETRIES} 次仍未成功，停止。")
+                break
+            retries += 1
+            self._log(f"[WARN] 训练异常退出，{TRAIN_RETRY_DELAY} 秒后自动从恢复点续训"
+                      f"（第 {retries}/{TRAIN_MAX_RETRIES} 次）…")
+            self.root.after(0, self._set_status,
+                            f"训练异常，正在自动续训（第 {retries}/{TRAIN_MAX_RETRIES} 次）…")
+            for _ in range(TRAIN_RETRY_DELAY):
+                if self.stop_flag:
+                    break
+                time.sleep(1)
         try:
             os.remove(tmp_path)
         except Exception:
@@ -1210,6 +1418,9 @@ if __name__ == "__main__":
 
     def start_pipeline(self):
         self._ask_resume()
+        if not self._confirm_estimate(do_colmap=True):
+            return
+        self._ips_recorded = False
         self.stop_flag = False
         self._set_params_enabled(False)
         self.run_btn.configure(state="disabled")
@@ -1233,6 +1444,9 @@ if __name__ == "__main__":
 
     def start_train_only(self):
         self._ask_resume()
+        if not self._confirm_estimate(do_colmap=False):
+            return
+        self._ips_recorded = False
         self.stop_flag = False
         self._set_params_enabled(False)
         self.run_btn.configure(state="disabled")
