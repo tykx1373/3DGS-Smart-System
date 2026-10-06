@@ -1,7 +1,8 @@
 # 基于 Huawei VkSplat (Apache License 2.0) 修改，原始许可证见同目录上级 LICENSE。
 # Modifications (this project, Apache-2.0): checkpoint save/resume via PLY,
 # PROGRESS output for GUI, STOP-file based graceful stop, UTF-8 safe image I/O
-# (cv2.imread/imwrite fail on non-ASCII Windows paths).
+# (cv2.imread/imwrite fail on non-ASCII Windows paths), LPIPS skipped when its
+# pretrained weights are not cached (avoids a ~760 MB download hang).
 from dataclasses import dataclass, field, asdict
 from typing import List, Tuple, Literal, Optional
 
@@ -455,6 +456,23 @@ def train(config: TrainerConfig, resume_output_dir: str = None):
         module.cleanup()
 
 
+LPIPS_VGG_FILE = "vgg16-397923af.pth"
+LPIPS_ALEX_FILE = "alexnet-owt-7be5be79.pth"
+
+
+def _lpips_weights_ready():
+    """LPIPS 依赖 vgg16 / alexnet 的预训练权重。torchvision 会在首次构造 LPIPS 时
+    从 download.pytorch.org 拉约 760 MB，国内常长时间无响应，看起来像卡死。
+    这里只查本地缓存，不做任何联网。"""
+    try:
+        import torch.hub
+        ckpt = os.path.join(torch.hub.get_dir(), "checkpoints")
+        return all(os.path.isfile(os.path.join(ckpt, f))
+                   for f in (LPIPS_VGG_FILE, LPIPS_ALEX_FILE))
+    except Exception:
+        return False
+
+
 def eval(config: TrainerConfig):
     try:
         import torch
@@ -467,8 +485,35 @@ def eval(config: TrainerConfig):
 
     psnr_fun = PeakSignalNoiseRatio(data_range=1.0).to(device)
     ssim_fun = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
-    lpips_vgg_fun = LearnedPerceptualImagePatchSimilarity(net_type="vgg", normalize=False).to(device)
-    lpips_alex_fun = LearnedPerceptualImagePatchSimilarity(net_type="alex", normalize=True).to(device)
+
+    # LPIPS 是"学习型"指标，必须用预训练网络。权重不在本地时会联网下载约 760 MB，
+    # 网络差就长时间无响应。默认只在权重已缓存时才计算，避免把一次成功的训练
+    # 拖成"看起来失败"；需要联网下载时显式设 VKSPLAT_LPIPS_DOWNLOAD=1。
+    use_lpips = _lpips_weights_ready()
+    allow_download = os.environ.get("VKSPLAT_LPIPS_DOWNLOAD", "").strip().lower() \
+        in ("1", "true", "yes", "on")
+    if not use_lpips and allow_download:
+        use_lpips = True
+        PRINT("LPIPS 权重未缓存：按 VKSPLAT_LPIPS_DOWNLOAD 联网下载（约 760 MB，可能很慢）...")
+    elif not use_lpips:
+        try:
+            import torch.hub
+            ckpt_dir = os.path.join(torch.hub.get_dir(), "checkpoints")
+        except Exception:
+            ckpt_dir = "<torch hub checkpoints>"
+        PRINT("跳过 LPIPS：预训练权重不在本地缓存，未开启下载。")
+        PRINT(f"  权重目录: {ckpt_dir}")
+        PRINT(f"  需要文件: {LPIPS_VGG_FILE} (527.8 MB)、{LPIPS_ALEX_FILE} (233.1 MB)")
+        PRINT("  想启用 LPIPS，任选一种：")
+        PRINT("    1) 把上面两个文件放进该目录（可从已有缓存的机器直接拷贝）")
+        PRINT("    2) 设环境变量 VKSPLAT_LPIPS_DOWNLOAD=1 后重跑，联网下载")
+        PRINT("  PSNR / SSIM 不受影响，照常输出。")
+        PRINT()
+
+    lpips_vgg_fun = lpips_alex_fun = None
+    if use_lpips:
+        lpips_vgg_fun = LearnedPerceptualImagePatchSimilarity(net_type="vgg", normalize=False).to(device)
+        lpips_alex_fun = LearnedPerceptualImagePatchSimilarity(net_type="alex", normalize=True).to(device)
 
     def load_image(filename):
         im = _imread_utf8(filename, cv2.IMREAD_UNCHANGED)
@@ -500,37 +545,35 @@ def eval(config: TrainerConfig):
             mask = load_mask(image_name['mask_path'])
             im, ref = im * mask, ref * mask
 
-        metrics = [
-            psnr_fun(im, ref).item(),
-            ssim_fun(im, ref).item(),
-            lpips_vgg_fun(im, ref).item(),
-            lpips_alex_fun(im, ref).item(),
-        ]
-        all_metrics.append(metrics)
-
-        obj.append({
+        metrics = [psnr_fun(im, ref).item(), ssim_fun(im, ref).item()]
+        entry = {
             'im_train': im_train,
             'im_render': im_render,
             'psnr': metrics[0],
             'ssim': metrics[1],
-            'lpips_vgg': metrics[2],
-            'lpips_alex': metrics[3],
-        })
+        }
+        if use_lpips:
+            metrics += [lpips_vgg_fun(im, ref).item(), lpips_alex_fun(im, ref).item()]
+            entry['lpips_vgg'] = metrics[2]
+            entry['lpips_alex'] = metrics[3]
+        all_metrics.append(metrics)
+        obj.append(entry)
 
-    psnr, ssim, lpips_vgg, lpips_alex = np.mean(all_metrics, axis=0)
+    mean = np.mean(all_metrics, axis=0)
+    psnr, ssim = float(mean[0]), float(mean[1])
     PRINT(f"PSNR: {psnr:.2f}")
     PRINT(f"SSIM: {ssim:.3f}")
-    PRINT(f"LPIPS VGG: {lpips_vgg:.3f}")  # used by inria
-    PRINT(f"LPIPS Alex: {lpips_alex:.3f}")  # used by gsplat
+    mean_obj = {'psnr': psnr, 'ssim': ssim}
+    if use_lpips:
+        lpips_vgg, lpips_alex = float(mean[2]), float(mean[3])
+        PRINT(f"LPIPS VGG: {lpips_vgg:.3f}")  # used by inria
+        PRINT(f"LPIPS Alex: {lpips_alex:.3f}")  # used by gsplat
+        mean_obj['lpips_vgg'] = lpips_vgg
+        mean_obj['lpips_alex'] = lpips_alex
     PRINT()
 
     obj = {
-        'mean': {
-            'psnr': psnr,
-            'ssim': ssim,
-            'lpips_vgg': lpips_vgg,
-            'lpips_alex': lpips_alex,
-        },
+        'mean': mean_obj,
         'images': obj
     }
     with open(os.path.join(config.output_dir, 'eval.json'), 'w') as fp:
