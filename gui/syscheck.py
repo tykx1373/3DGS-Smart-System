@@ -254,7 +254,7 @@ def check_vksplat_module():
 
 def check_dependencies():
     required = {"numpy": "numpy", "cv2": "opencv-python-headless", "tqdm": "tqdm"}
-    optional = {"torch": "torch", "torchmetrics": "torchmetrics"}
+    optional = {"torch": "torch", "torchvision": "torchvision", "torchmetrics": "torchmetrics"}
     missing_req, missing_opt = [], []
     for mod, pkg in required.items():
         try:
@@ -273,8 +273,8 @@ def check_dependencies():
                            "在 env/vksplat 中 pip install 缺失的包")
     if missing_opt:
         return CheckResult("依赖包", WARN, f"缺少: {', '.join(missing_opt)}",
-                           "缺少仅影响训练后的 PSNR/SSIM 评测，不影响训练本身")
-    return CheckResult("依赖包", OK, "numpy / opencv / tqdm / torch / torchmetrics 齐全")
+                           "缺少会让训练结束后的评测崩溃（退出码 1）；缺 torchvision 时 LPIPS 无法构建")
+    return CheckResult("依赖包", OK, "numpy / opencv / tqdm / torch / torchvision / torchmetrics 齐全")
 
 
 def _vulkan_fail_reasons(d):

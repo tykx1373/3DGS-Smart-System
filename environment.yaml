@@ -10,8 +10,9 @@ dependencies:
   - pip:
       - opencv-python-headless>=4.8
       - customtkinter>=5.2
-      # torch (CPU-only) and torchmetrics are installed separately by
-      # download_tools.ps1 to ensure the CPU wheel is used (no CUDA bloat).
+      # torch (CPU-only), torchvision and torchmetrics are installed separately by
+      # download_tools.ps1 to ensure the CPU wheels are used (no CUDA bloat).
+      # torchvision is required by torchmetrics' LPIPS metric used in eval.
       # VkSplat is installed by download_tools.bat using prebuilt .pyd (no compile needed).
       # To recompile from source: pip install -e tools/vksplat/vksplat --no-build-isolation
       #   (requires Vulkan SDK + MSVC)

@@ -543,27 +543,30 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
     if ($condaPython) {
         Write-Host "  Using env python: $condaPython"
 
-        # Install CPU-only PyTorch + torchmetrics (from PyTorch CPU index, no CUDA bloat).
-        # Probe with ErrorActionPreference=Continue: on a fresh machine torch is absent,
+        # Install CPU-only PyTorch + torchvision + torchmetrics (from the PyTorch CPU
+        # index, no CUDA bloat). torchvision is required: torchmetrics' LPIPS metric
+        # raises at construction time when it is missing, which crashes the
+        # post-training eval with a non-zero exit code.
+        # Probe with ErrorActionPreference=Continue: on a fresh machine these are absent,
         # so the probe writes a traceback to stderr; under the global "Stop" setting that
-        # becomes a terminating NativeCommandError and aborts this section before torch
-        # is ever installed (the script would then fail on every re-run).
+        # becomes a terminating NativeCommandError and aborts this section before they
+        # are ever installed (the script would then fail on every re-run).
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        $torchOut = (& $condaPython -c "import torch; print('ok')" 2>&1 | Out-String)
+        $torchOut = (& $condaPython -c "import torch, torchvision, torchmetrics; print('ok')" 2>&1 | Out-String)
         $pyVer = (& $condaPython -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>&1 | Out-String).Trim()
         $ErrorActionPreference = $prevEAP
 
         if ($torchOut -notmatch "(?m)^ok\s*$") {
             Write-Host "  torch probe output:"
             ($torchOut.Trim() -split "`r?`n") | Where-Object { $_ } | ForEach-Object { Write-Host "    $_" }
-            Write-Host "  Installing CPU-only PyTorch + torchmetrics..."
-            cmd /c "`"$condaPython`" -m pip install torch torchmetrics --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
+            Write-Host "  Installing CPU-only PyTorch + torchvision + torchmetrics..."
+            cmd /c "`"$condaPython`" -m pip install torch torchvision torchmetrics --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "[WARN] torch install failed. Try: pip install torch torchmetrics" -ForegroundColor Yellow
+                Write-Host "[WARN] torch install failed. Try: pip install torch torchvision torchmetrics" -ForegroundColor Yellow
             }
         } else {
-            Write-Host "  torch already installed, skipping"
+            Write-Host "  torch / torchvision / torchmetrics already installed, skipping"
         }
 
         # Determine Python ABI version (e.g. 310 for Python 3.10)
