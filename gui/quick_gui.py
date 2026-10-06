@@ -104,6 +104,16 @@ FONT_BIG_BTN = ("Microsoft YaHei UI", 13, "bold")
 FONT_STATUS = ("Microsoft YaHei UI", 10)
 FONT_LOG = ("Consolas", 11)
 
+# 训练图像分辨率：质量档位给默认值，用户可在高级选项里单独覆盖
+RES_AUTO = "跟随质量档位"
+RES_DIR_MAP = {
+    "1/4（images_4）": "images_4",
+    "1/2（images_2）": "images_2",
+    "原分辨率（images）": "images",
+}
+RES_DEFAULT_BY_QUALITY = {"快速": "images_4", "标准": "images_2", "高质量": "images"}
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+
 # tqdm 走 stderr 且用 \r 刷新，会把 stdout 的 PROGRESS 标记挤到行中间，
 # 因此这里不要求行首匹配，而是在整行内查找进度标记。
 _PROGRESS_RE = re.compile(r"PROGRESS:\s*(\d+)/(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)")
@@ -115,6 +125,128 @@ _TQDM_RE = re.compile(
     r"[^|]*\|\s*(?P<n>\d+)/(?P<total>\d+)"
     r"(?:\s*\[(?P<elapsed>[0-9:]+)<(?P<eta>[0-9:?]+))?"
 )
+
+
+# ------------------------------------------------------------ tooltips ----
+# 各控件的悬浮说明。以控件文字为键；输入框/下拉框这类没有自身文字的控件，
+# 用同一行里紧邻的标签文字补位（见 _install_tooltips）。
+TIP_TEXTS = {
+    "照片文件夹：": "装照片的文件夹。建议绕物体拍一圈，相邻照片重叠 60% 以上，30~200 张。",
+    "质量档位：": "决定训练步数、高斯点数上限和默认分辨率。这三项都能在高级选项里单独调整。",
+    "快速": "5000 步，默认 1/4 分辨率，约 2~3 分钟。用来快速看轮廓。",
+    "标准": "15000 步，默认半分辨率，约 8~10 分钟。推荐日常使用。",
+    "高质量": "30000 步，默认原分辨率，约 20 分钟以上。细节最丰富。",
+    "开始生成 3D 模型": "依次执行：COLMAP 稀疏重建 → VkSplat 训练 → 打开 VKGS 查看器。",
+    "停止": "安全停止：写入 STOP 标记，让训练在当前步收尾并存档，下次可从存档继续。",
+    "查看 3D 模型": "用 VKGS 打开工作区里的 PLY 模型（可同时开多个窗口对比）。",
+    "环境自检": "检查 Python / vksplat 模块 / 依赖 / Vulkan 设备 / COLMAP / VKGS / 磁盘空间，"
+                "并给出“能不能跑”和预计耗时。",
+    "运行日志": "切换独立日志窗口。完整日志同时写入 logs/年月日.log。",
+    "COLMAP:": "COLMAP 可执行文件位置（colmap.exe 或 COLMAP.bat）。含中文的路径也可以。",
+    "VkSplat Python:": "运行 VkSplat 训练用的 Python 解释器，通常就是 env/vksplat/python.exe。",
+    "VKGS 查看器:": "vk_gaussian_splatting.exe，用来实时查看训练出来的模型。",
+    "工作区文件夹:": "每个数据集对应一个工作区，里面放 images / sparse / database.db / checkpoint。"
+                    "留空则自动生成到 workspaces/ 下。",
+    "训练步数:": "迭代次数，越多细节越好、耗时越长。"
+                 "注意：若工作区里已存在更靠后的存档（checkpoint），把步数改小不会产生新的训练。",
+    "MCMC 优化": "MCMC 稠密化策略：高斯点数增长更快、质量更好。默认开启。",
+    "图片缓存:": "gpu 更快但占显存；显存紧张或是核显，建议 cpu。",
+    "图像分辨率:": "训练与评测使用的图像尺寸。跟随质量档位＝快速 1/4、标准 1/2、高质量原图。"
+                   "COLMAP 始终用原图，重建质量不受影响。",
+    "允许联网下载 LPIPS 权重（约 760 MB，国内可能很慢）":
+        "不勾：权重未缓存时跳过 LPIPS，只输出 PSNR / SSIM，不会卡住。"
+        "勾上：联网下载约 760 MB 后计算 LPIPS。",
+    "最大图片尺寸:": "COLMAP 特征提取时把图片长边缩到该值以内。越大越精确也越慢（默认 1600）。",
+    "只用 COLMAP（空间定位）": "只跑稀疏重建（生成 sparse/0），不训练。",
+    "只用训练（生成模型）": "复用已有的 sparse/0，只跑训练，不会重跑 COLMAP。",
+    "保存路径配置": "把上面的工具路径与工作区写入 gui/quick_gui_config.json，下次启动自动读取。",
+}
+
+
+class _Tip:
+    """悬浮说明：鼠标停在控件旁的「?」上时，在其右侧弹出小窗；移开、点击、
+    或主窗口被移动/缩放都会关闭。
+
+    只把进出事件绑在「?」这个小标签上（叶子控件，事件可靠），再配合窗口级的
+    鼠标移动监听兜底，避免复合控件 NotifyInferior 造成的“移开不消失”。
+    """
+
+    def __init__(self, app, widget, text, delay=250):
+        self.app = app
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self._after = None
+        self._win = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def contains_pointer(self):
+        """指针是否还在「?」范围内。"""
+        try:
+            px, py = self.widget.winfo_pointerxy()
+            x, y = self.widget.winfo_rootx(), self.widget.winfo_rooty()
+            w = self.widget.winfo_width() or self.widget.winfo_reqwidth()
+            h = self.widget.winfo_height() or self.widget.winfo_reqheight()
+            return x <= px <= x + w and y <= py <= y + h
+        except Exception:
+            return False
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        try:
+            self._after = self.widget.after(self.delay, self._show)
+        except Exception:
+            self._after = None
+
+    def _show(self):
+        if self._win is not None:
+            return
+        try:
+            if not self.widget.winfo_exists():
+                return
+            win = tk.Toplevel(self.widget)
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            frame = ctk.CTkFrame(win, corner_radius=6, border_width=1,
+                                 fg_color=("#ffffe1", "#3c3c3c"))
+            frame.pack()
+            ctk.CTkLabel(frame, text=self.text, font=FONT_HINT, justify="left",
+                         wraplength=340).pack(padx=9, pady=6)
+            win.update_idletasks()
+            w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            # 放在「?」右侧（不挡鼠标）；右边放不下就改到左侧
+            x = self.widget.winfo_rootx() + self.widget.winfo_width() + 8
+            if x + w > sw - 8:
+                x = self.widget.winfo_rootx() - w - 8
+            x = max(8, min(x, sw - 8 - w))
+            y = max(8, min(self.widget.winfo_rooty() - 4, sh - 8 - h))
+            win.geometry(f"+{x}+{y}")
+            self._win = win
+            self.app._active_tip = self
+        except Exception:
+            self._win = None
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self._win is not None:
+            try:
+                self._win.destroy()
+            except Exception:
+                pass
+            self._win = None
+        if getattr(self.app, "_active_tip", None) is self:
+            self.app._active_tip = None
+
+    def _cancel(self):
+        if self._after is not None:
+            try:
+                self.widget.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
 
 
 class _GuiLogHandler(logging.Handler):
@@ -338,7 +470,7 @@ class QuickSplatApp:
         # 高级选项独立窗口
         self.adv_window = ctk.CTkToplevel(self.root)
         self.adv_window.title("高级选项")
-        self.adv_window.geometry("600x640")
+        self.adv_window.geometry("860x700")
         self.adv_window.withdraw()
         self.adv_window.protocol("WM_DELETE_WINDOW", self._hide_advanced)
         self.advanced_frame = ctk.CTkFrame(self.adv_window, fg_color="transparent")
@@ -367,6 +499,94 @@ class QuickSplatApp:
 
         self._apply_quality_preset()
         self._refresh_backend_opts()
+        self._install_tooltips()
+
+    # ------------------------------------------------------- tooltips ----
+    def _add_tip(self, widget, text):
+        if not text:
+            return
+        if not hasattr(self, "_tips"):
+            self._tips, self._tipped, self._active_tip = [], set(), None
+        if id(widget) in self._tipped:
+            return
+        self._tipped.add(id(widget))
+        try:
+            self._tips.append(_Tip(self, widget, text))
+        except Exception:
+            pass
+
+    def _add_help_mark(self, target, text):
+        """在控件旁插一个「?」，说明挂在「?」上——「?」是叶子小控件，进出事件可靠。"""
+        if not text:
+            return
+        # 通栏按钮宽度已经占满，插「?」会挤压布局，直接挂在按钮本身（够大、好点）
+        if target is getattr(self, "log_btn", None) or target is getattr(self, "adv_btn", None):
+            self._add_tip(target, text)
+            return
+        # 注意：不要用 pack_info() 判断 fill —— CTkEntry 返回的是内部 Entry 的信息
+        try:
+            q = ctk.CTkLabel(target.master, text="?", width=12, font=FONT_HINT,
+                             text_color=("#3b82f6", "#60a5fa"))
+            q.pack(side="left", padx=(2, 0), after=target)
+            self._add_tip(q, text)
+        except Exception:
+            self._add_tip(target, text)
+
+    def _tip_motion(self, _e=None):
+        """窗口级兜底：指针离开「?」就关掉提示（复合控件的 Leave 事件不可靠）。"""
+        t = getattr(self, "_active_tip", None)
+        if t is not None and not t.contains_pointer():
+            t._hide()
+
+    def _tip_window_changed(self, event):
+        """窗口被移动/缩放时关掉提示，否则小窗会留在原地。"""
+        if event.widget is not event.widget.winfo_toplevel():
+            return            # 忽略子控件自身产生的 Configure
+        t = getattr(self, "_active_tip", None)
+        if t is not None:
+            t._hide()
+
+    def _watch_tips(self):
+        for w in (self.root, self.adv_window, self.log_window):
+            try:
+                w.bind("<Motion>", self._tip_motion, add="+")
+                w.bind("<Configure>", self._tip_window_changed, add="+")
+            except Exception:
+                pass
+
+    def _install_tooltips(self):
+        """按控件文字找到该讲说明的控件，并在它旁边插一个「?」。
+        输入框/下拉框没有自身文字，用同一行里紧邻的标签补位。"""
+        def walk(container, last_label):
+            for child in container.winfo_children():
+                txt = None
+                try:
+                    t = child.cget("text")
+                    txt = t if isinstance(t, str) else None
+                except Exception:
+                    pass
+                # 注意：CTk 控件的 winfo_class() 都返回 "Frame"，必须用类型名判断
+                cls = type(child).__name__
+
+                handled = False
+                if txt and txt in TIP_TEXTS:
+                    self._add_help_mark(child, TIP_TEXTS[txt])
+                    handled = True
+                elif cls in ("Entry", "TEntry", "CTkEntry", "CTkComboBox") and last_label in TIP_TEXTS:
+                    self._add_help_mark(child, TIP_TEXTS[last_label])
+                    handled = True
+                elif cls == "CTkButton" and txt in ("浏览", "浏览…") and last_label:
+                    self._add_help_mark(child, TIP_TEXTS.get(last_label))
+                    handled = True
+
+                if txt and txt.rstrip().endswith((":", "：")):
+                    last_label = txt
+                if not handled:
+                    walk(child, last_label)
+
+        walk(self.root, None)
+        self._add_tip(self.adv_btn, "路径配置、训练参数、COLMAP 选项与分步操作。")
+        self._watch_tips()
 
     def _build_log_window(self):
         """运行日志放在独立窗口，避免挤占主界面。"""
@@ -439,16 +659,34 @@ class QuickSplatApp:
         ctk.CTkLabel(af, text="VkSplat 训练参数", font=FONT_STEP).pack(anchor="w", pady=(12, 4))
         self.vs_frame = ctk.CTkFrame(af, fg_color="transparent")
         self.vs_frame.pack(fill="x", pady=3)
-        ctk.CTkLabel(self.vs_frame, text="训练步数:", width=90, anchor="w").pack(side="left")
+        # 分两行放：全部挤在一行会超出窗口宽度被裁掉
+        # （整行需求宽度约 1100px，而高级选项窗口没这么宽）
+        r1 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
+        r1.pack(fill="x")
+        ctk.CTkLabel(r1, text="训练步数:", width=90, anchor="w").pack(side="left")
         self.vs_steps_var = tk.IntVar(value=15000)
-        ctk.CTkEntry(self.vs_frame, textvariable=self.vs_steps_var, width=100).pack(side="left", padx=4)
+        ctk.CTkEntry(r1, textvariable=self.vs_steps_var, width=100).pack(side="left", padx=4)
         self.vs_mcmc_var = tk.BooleanVar(value=True)
-        ctk.CTkCheckBox(self.vs_frame, text="MCMC 优化",
+        ctk.CTkCheckBox(r1, text="MCMC 优化",
                         variable=self.vs_mcmc_var).pack(side="left", padx=12)
-        ctk.CTkLabel(self.vs_frame, text="图片缓存:", width=80, anchor="w").pack(side="left")
+
+        r2 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
+        r2.pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(r2, text="图片缓存:", width=90, anchor="w").pack(side="left")
         self.vs_cache_var = tk.StringVar(value="cpu")
-        ctk.CTkComboBox(self.vs_frame, variable=self.vs_cache_var,
+        ctk.CTkComboBox(r2, variable=self.vs_cache_var,
                         values=["cpu", "gpu"], width=80, state="readonly").pack(side="left", padx=4)
+        ctk.CTkLabel(r2, text="图像分辨率:", width=90, anchor="w").pack(side="left", padx=(12, 0))
+        self.res_var = tk.StringVar(value=RES_AUTO)
+        ctk.CTkComboBox(r2, variable=self.res_var,
+                        values=[RES_AUTO] + list(RES_DIR_MAP),
+                        width=140, state="readonly").pack(side="left", padx=4)
+
+        r3 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
+        r3.pack(fill="x", pady=(4, 0))
+        self.lpips_dl_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(r3, text="允许联网下载 LPIPS 权重（约 760 MB，国内可能很慢）",
+                        variable=self.lpips_dl_var).pack(side="left")
 
         ctk.CTkLabel(af, text="COLMAP 选项", font=FONT_STEP).pack(anchor="w", pady=(12, 4))
         rc = ctk.CTkFrame(af, fg_color="transparent")
@@ -629,9 +867,8 @@ class QuickSplatApp:
     def _count_images(self, folder):
         if not folder or not os.path.isdir(folder):
             return 0
-        exts = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
         return sum(1 for f in os.listdir(folder)
-                   if f.lower().endswith(exts))
+                   if f.lower().endswith(IMAGE_EXTS))
 
     def _browse_img(self):
         p = filedialog.askdirectory()
@@ -882,6 +1119,92 @@ class QuickSplatApp:
             self._log(f"[FAIL] 无法创建目录联接: {e}")
             return False
 
+    @staticmethod
+    def _is_reparse(path):
+        """目录联接/符号链接判定。Windows 的目录联接用 os.path.islink 不可靠，
+        这里以 lstat 的 st_reparse_tag 为主。"""
+        try:
+            if getattr(os.lstat(path), "st_reparse_tag", 0):
+                return True
+        except Exception:
+            pass
+        return os.path.islink(path)
+
+    @staticmethod
+    def _remove_dir_or_link(path):
+        """删除目录；若是联接/符号链接，只移除链接本身，不动它指向的目录。"""
+        if QuickSplatApp._is_reparse(path):
+            os.rmdir(path)
+        else:
+            shutil.rmtree(path)
+
+    def _make_downscaled(self, dst_dir, src_dir, factor):
+        """把 src_dir 的图片按 1/factor 缩放后写入 dst_dir，文件名保持不变
+        （COLMAP 的 images.bin 按文件名索引，改名就找不到图了）。
+
+        旧版本把 images_2 / images_4 也联接到原图，三个档位分辨率其实一样；
+        这里生成真副本。先写 .tmp 再整体替换到位——若旧目录其实是个指向原图的
+        联接，直接往里写就会覆盖用户的原图，这样能彻底避免。图片用 cv2 编解码 +
+        Python 读写，避免非 ASCII 路径在 Windows 上打不开。
+        """
+        import cv2
+        import numpy as np
+
+        names = [n for n in os.listdir(src_dir) if n.lower().endswith(IMAGE_EXTS)]
+        if not names:
+            self._log(f"[WARN] 源目录中没有图片: {src_dir}")
+            return False
+
+        # 已是普通目录且张数对得上 → 上次生成过，直接用
+        if os.path.isdir(dst_dir) and not self._is_reparse(dst_dir):
+            have = [n for n in os.listdir(dst_dir) if n.lower().endswith(IMAGE_EXTS)]
+            if len(have) == len(names):
+                self._log(f"[INFO] {os.path.basename(dst_dir)} 已存在（{len(names)} 张），跳过生成")
+                return True
+
+        tmp_dir = dst_dir + ".tmp"
+        if os.path.exists(tmp_dir):
+            self._remove_dir_or_link(tmp_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        done = 0
+        for name in names:
+            try:
+                with open(os.path.join(src_dir, name), "rb") as f:
+                    buf = np.frombuffer(f.read(), dtype=np.uint8)
+                im = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                if im is None:
+                    continue
+                h, w = im.shape[:2]
+                im = cv2.resize(im, (max(1, w // factor), max(1, h // factor)),
+                                interpolation=cv2.INTER_AREA)
+                ext = os.path.splitext(name)[1].lower() or ".jpg"
+                params = [cv2.IMWRITE_JPEG_QUALITY, 95] if ext in (".jpg", ".jpeg") else []
+                enc_ok, enc = cv2.imencode(ext, im, params)
+                if not enc_ok:
+                    continue
+                with open(os.path.join(tmp_dir, name), "wb") as f:
+                    f.write(enc.tobytes())
+                done += 1
+            except Exception as e:
+                self._log(f"[WARN] {os.path.basename(dst_dir)} 生成失败 {name}: {e}")
+
+        if done == 0:
+            self._remove_dir_or_link(tmp_dir)
+            self._log(f"[FAIL] {os.path.basename(dst_dir)} 一张都没生成成功")
+            return False
+
+        if os.path.exists(dst_dir):
+            try:
+                self._remove_dir_or_link(dst_dir)
+            except Exception as e:
+                self._remove_dir_or_link(tmp_dir)
+                self._log(f"[FAIL] 无法替换 {dst_dir}: {e}")
+                return False
+        os.rename(tmp_dir, dst_dir)
+        self._log(f"[OK] 已生成 {os.path.basename(dst_dir)}（1/{factor} 分辨率），共 {done} 张")
+        return True
+
     # --------------------------------------------------- ensure sparse/0 ----
     def _ensure_sparse_zero(self, sparse_dir):
         sparse_zero = os.path.join(sparse_dir, "0")
@@ -900,12 +1223,18 @@ class QuickSplatApp:
     # -------------------------------------------------------- VkSplat py ----
     def _build_vksplat_script(self, dataset_dir, image_dir, sparse_dir,
                               output_dir, train_steps, cache_device,
-                              device_id=-1, cap_max=1000000, resume_output_dir=None):
+                              device_id=-1, cap_max=1000000, resume_output_dir=None,
+                              allow_lpips_download=False):
         resume_line = f", resume_output_dir=r\"{resume_output_dir}\"" if resume_output_dir else ""
+        # 评测的 LPIPS 需要约 760 MB 预训练权重。默认只在已缓存时才计算（见
+        # simple_trainer.eval）；勾选「允许联网下载」后把开关注入训练脚本的环境变量
+        # —— 训练是独立子进程，必须写进脚本才带得过去。
+        lpips_line = 'os.environ["VKSPLAT_LPIPS_DOWNLOAD"] = "1"\n' if allow_lpips_download else ""
         return f"""# -*- coding: utf-8 -*-
 import os, sys
 sys.path.insert(0, os.path.abspath(r"{os.path.join(PROJECT_ROOT, 'tools', 'vksplat', 'vksplat')}"))
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+{lpips_line}
 # 强制 UTF-8 输出，避免中文日志在 GUI 中乱码
 for _s in (sys.stdout, sys.stderr):
     if hasattr(_s, "reconfigure"):
@@ -1138,10 +1467,21 @@ if __name__ == "__main__":
 
         device_id, is_integrated, gpu_name = self._detect_gpu(vksp_py)
         quality = self.quality_var.get()
-        res_map = {"快速": "images_4", "标准": "images_2", "高质量": "images"}
         cap_map = {"快速": 200000, "标准": 400000, "高质量": 800000}
-        res_dir = res_map.get(quality, "images_2")
+        # 档位给默认值；高级选项里的「图像分辨率」可单独覆盖
+        res_dir = RES_DIR_MAP.get(self.res_var.get()) or \
+            RES_DEFAULT_BY_QUALITY.get(quality, "images_2")
         base_cap = cap_map.get(quality, 400000)
+
+        # 确保所用分辨率的降采样副本存在（幂等，已存在则秒过）。旧版本把
+        # images_2 / images_4 联接到原图，等于没降采样，会在这里被换成真副本——
+        # 因此「仅训练」也能把旧工作区修好。
+        if res_dir != "images":
+            src_images = os.path.join(ws_dir, "images")
+            src_images = os.path.realpath(src_images) if os.path.isdir(src_images) else img_dir
+            if os.path.isdir(src_images):
+                self._make_downscaled(os.path.join(ws_dir, res_dir), src_images,
+                                      2 if res_dir == "images_2" else 4)
 
         if gpu_name == "unknown":
             cap_max = base_cap
@@ -1185,6 +1525,7 @@ if __name__ == "__main__":
             train_steps=steps, cache_device=cache,
             device_id=device_id, cap_max=cap_max,
             resume_output_dir=ws_dir.replace("\\", "/"),
+            allow_lpips_download=self.lpips_dl_var.get(),
         )
 
         tmp_path = os.path.join(tempfile.gettempdir(), "vksplat_train_generated.py")
@@ -1314,8 +1655,7 @@ if __name__ == "__main__":
         images_link = os.path.join(ws_dir, "images")
         if not self._make_junction(images_link, img_dir):
             return None, None, None
-        self._make_junction(os.path.join(ws_dir, "images_2"), img_dir)
-        self._make_junction(os.path.join(ws_dir, "images_4"), img_dir)
+        # images_2 / images_4 的降采样副本在训练前按需生成（见 run_vksplat_train）
 
         db_path = os.path.join(ws_dir, "database.db")
         sparse_dir = os.path.join(ws_dir, "sparse")
