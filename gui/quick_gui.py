@@ -108,6 +108,14 @@ FONT_LOG = ("Consolas", 11)
 # 因此这里不要求行首匹配，而是在整行内查找进度标记。
 _PROGRESS_RE = re.compile(r"PROGRESS:\s*(\d+)/(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)")
 
+# 通用 tqdm 帧，形如 "Running eval:  44%|███▍ | 7/16 [02:20<03:04, 20.5s/it]"。
+# 只匹配 ASCII 阶段名，避免误吃中文或路径文本。
+_TQDM_RE = re.compile(
+    r"(?P<label>[A-Za-z][A-Za-z0-9 _\-]*?):\s*(?P<pct>\d+)%\|"
+    r"[^|]*\|\s*(?P<n>\d+)/(?P<total>\d+)"
+    r"(?:\s*\[(?P<elapsed>[0-9:]+)<(?P<eta>[0-9:?]+))?"
+)
+
 
 class _GuiLogHandler(logging.Handler):
     """把 logging 记录转发到 GUI 的 queue（供 _poll_log 显示）。"""
@@ -710,8 +718,25 @@ class QuickSplatApp:
             # 进度行完整写入日志文件，界面只由进度条/详情体现
             self.logger.info(text.strip(), extra={"file_only": True})
             return
-        # tqdm 刷新帧（形如 "Training:  3%|██  | 95/3000 [...]"）只进日志文件
+        # tqdm 刷新帧（形如 "Training:  3%|██  | 95/3000 [...]" 或
+        # "Running eval: 44%|...| 7/16 [...]"）：完整写入日志文件，界面不用文字
+        # 刷屏，改为更新进度详情——否则评测这类长阶段看起来像卡死。
         if "%|" in text:
+            m = _TQDM_RE.search(text)
+            # Training 阶段由上面的 PROGRESS 标记驱动（文案更全），跳过以免两种格式互相覆盖
+            if m and m.group("label").strip() != "Training":
+                label = m.group("label").strip()
+                n, total = int(m.group("n")), int(m.group("total"))
+                elapsed, eta = m.group("elapsed"), m.group("eta")
+                detail = f"{label}：{n}/{total}"
+                if elapsed:
+                    detail += f" · 已用 {elapsed}"
+                if eta and eta != "?":
+                    detail += f" · 剩余 {eta}"
+                try:
+                    self.progress_detail_var.set(detail)
+                except Exception:
+                    pass
             self.logger.info(text.strip(), extra={"file_only": True})
             return
         t = text.strip()
