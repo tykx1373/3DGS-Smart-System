@@ -391,7 +391,10 @@ MAPPING: dict[str, str] = {
                         Path(__file__).resolve().parent) / 'tools' / 'vksplat' / 'vksplat' / 'vksplat')
 }
 '@
-        $content = Get-Content $finder.FullName -Raw
+        # Read as UTF-8 explicitly: Windows PowerShell 5.1 Get-Content defaults to the
+        # ANSI codepage, which mangles non-ASCII bytes (and a GBK lead byte can even
+        # swallow the following newline, breaking the file).
+        $content = [System.IO.File]::ReadAllText($finder.FullName, (New-Object System.Text.UTF8Encoding($false)))
         $content = [regex]::Replace($content, '(?ms)^MAPPING: dict\[str, str\] = \{.*?\}', $rel)
         [System.IO.File]::WriteAllText($finder.FullName, $content, (New-Object System.Text.UTF8Encoding($false)))
     }
