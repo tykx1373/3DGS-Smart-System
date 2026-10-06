@@ -502,6 +502,9 @@ class QuickSplatApp:
         return os.path.join(ws_dir, f"vksplat_{steps}steps_{q}.ply")
 
     def _find_latest_ply(self, ws_dir):
+        # Workspace may not exist yet (new dataset) - do not crash on listdir.
+        if not os.path.isdir(ws_dir):
+            return None
         plys = [os.path.join(ws_dir, f) for f in os.listdir(ws_dir)
                 if f.lower().endswith(".ply")]
         if not plys:
