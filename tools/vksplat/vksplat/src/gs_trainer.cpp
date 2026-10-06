@@ -2,6 +2,7 @@
 // Modifications (this project, Apache-2.0): applied world-space alignment rotation
 // R = [[1,0,0],[0,0,1],[0,-1,0]] to align COLMAP poses to OpenSplat convention.
 #include "gs_trainer.h"
+#include "utf8_path.h"
 
 #include "knn.h"
 
@@ -138,28 +139,28 @@ void VulkanGSTrainer::load_colmap_dataset(
     ColmapReader reader;
 
     std::map<int, ColmapReader::Camera> rawCameras;
-    if (std::filesystem::exists(config.sparse_dir + "cameras.bin")) {
+    if (std::filesystem::exists(vksplat_util::utf8Path(config.sparse_dir + "cameras.bin"))) {
         printf("Reading COLMAP cameras from cameras.bin\n");
         rawCameras = reader.readCamerasBinary(config.sparse_dir + "cameras.bin");
-    } else if (std::filesystem::exists(config.sparse_dir + "cameras.txt")) {
+    } else if (std::filesystem::exists(vksplat_util::utf8Path(config.sparse_dir + "cameras.txt"))) {
         printf("Reading COLMAP cameras from cameras.txt\n");
         rawCameras = reader.readCamerasText(config.sparse_dir + "cameras.txt");
     } else throw std::runtime_error("cameras.bin or cameras.txt not found in `" + config.sparse_dir + "`");
 
     std::map<int, ColmapReader::Image> rawImages;
-    if (std::filesystem::exists(config.sparse_dir + "images.bin")) {
+    if (std::filesystem::exists(vksplat_util::utf8Path(config.sparse_dir + "images.bin"))) {
         printf("Reading COLMAP images from images.bin\n");
         rawImages = reader.readImagesBinary(config.sparse_dir + "images.bin");
-    } else if (std::filesystem::exists(config.sparse_dir + "images.txt")) {
+    } else if (std::filesystem::exists(vksplat_util::utf8Path(config.sparse_dir + "images.txt"))) {
         printf("Reading COLMAP images from images.txt\n");
         rawImages = reader.readImagesText(config.sparse_dir + "images.txt");
     } else throw std::runtime_error("images.bin or images.txt not found in `" + config.sparse_dir + "`");
 
     std::map<uint64_t, ColmapReader::Point3D> rawPoints;
-    if (std::filesystem::exists(config.sparse_dir + "points3D.bin")) {
+    if (std::filesystem::exists(vksplat_util::utf8Path(config.sparse_dir + "points3D.bin"))) {
         printf("Reading COLMAP points from points3D.bin\n");
         rawPoints = reader.readPoints3DBinary(config.sparse_dir + "points3D.bin");
-    } else if (std::filesystem::exists(config.sparse_dir + "points3D.txt")) {
+    } else if (std::filesystem::exists(vksplat_util::utf8Path(config.sparse_dir + "points3D.txt"))) {
         printf("Reading COLMAP points from points3D.txt\n");
         rawPoints = reader.readPoints3DText(config.sparse_dir + "points3D.txt");
     } else throw std::runtime_error("points3D.bin or points3D.txt not found in `" + config.sparse_dir + "`");
@@ -380,7 +381,7 @@ void VulkanGSTrainer::load_colmap_dataset(
                     config.mask_dir + rawImage.name.substr(0, rawImage.name.rfind('.')) + ".PNG",
                 });
             for (std::string temp_path : possible_mask_paths)
-                if (std::filesystem::exists(temp_path)) {
+                if (std::filesystem::exists(vksplat_util::utf8Path(temp_path))) {
                     mask_path = temp_path;
                     break;
                 }
@@ -1437,7 +1438,7 @@ void VulkanGSTrainer::writePLY(std::string filename, VulkanGSPipelineBuffers& bu
         p[3] = logf(p[3] / (1.0f - p[3]));
     }
 
-    FILE* fp = fopen(filename.c_str(), "wb");
+    FILE* fp = vksplat_util::openFile(filename, "wb");
     if (!fp) throw std::runtime_error("writePLY: file open failed " + filename);
 
     struct PLYComponent {

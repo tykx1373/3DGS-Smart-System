@@ -1,5 +1,6 @@
 #include "gs_pipeline.h"
 #include "perf_timer.h"
+#include "utf8_path.h"
 
 #include <fstream>
 
@@ -36,7 +37,9 @@ std::vector<uint32_t> loadSpirv(std::string spirv_path) {
     }
     #endif
 
-    std::ifstream file(spirv_path, std::ios::binary | std::ios::ate);
+    // u8path: the path arrives as UTF-8 bytes from Python; the narrow ifstream
+    // overload would resolve it through the ANSI codepage and fail on non-ASCII paths.
+    std::ifstream file(vksplat_util::utf8Path(spirv_path), std::ios::binary | std::ios::ate);
     if (!file) throw std::runtime_error("Failed to open file: " + spirv_path);
 
     std::streamsize fileSize = file.tellg();

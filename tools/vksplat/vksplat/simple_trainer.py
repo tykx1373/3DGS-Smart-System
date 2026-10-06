@@ -1,6 +1,7 @@
 # 基于 Huawei VkSplat (Apache License 2.0) 修改，原始许可证见同目录上级 LICENSE。
 # Modifications (this project, Apache-2.0): checkpoint save/resume via PLY,
-# PROGRESS output for GUI, STOP-file based graceful stop.
+# PROGRESS output for GUI, STOP-file based graceful stop, UTF-8 safe image I/O
+# (cv2.imread/imwrite fail on non-ASCII Windows paths).
 from dataclasses import dataclass, field, asdict
 from typing import List, Tuple, Literal, Optional
 
@@ -17,6 +18,28 @@ from time import perf_counter
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+
+
+# --- UTF-8 safe OpenCV I/O -------------------------------------------------
+# cv2.imread / cv2.imwrite resolve the path through the Windows ANSI codepage,
+# so on a system whose ACP is not UTF-8 a non-ASCII path (e.g. a project folder
+# named "科研立项") silently fails - imread returns None, imwrite returns False.
+# These wrappers let Python (which handles Unicode paths) do the file I/O and
+# only encode/decode the bytes in memory.
+def _imread_utf8(path, flags=cv2.IMREAD_COLOR):
+    with open(path, "rb") as f:
+        buf = np.frombuffer(f.read(), dtype=np.uint8)
+    return cv2.imdecode(buf, flags)
+
+
+def _imwrite_utf8(path, img):
+    ext = os.path.splitext(path)[1] or ".png"
+    ok, buf = cv2.imencode(ext, img)
+    if not ok:
+        return False
+    with open(path, "wb") as f:
+        f.write(buf.tobytes())
+    return True
 
 
 # Device used for actual training, -1 for auto
@@ -397,7 +420,7 @@ def train(config: TrainerConfig, resume_output_dir: str = None):
         im = np.round(65535 * np.clip(im, 0, 1)).astype(np.uint16)
         # im = np.round(255 * np.clip(im, 0, 1)).astype(np.uint8)
         im = cv2.cvtColor(im, cv2.COLOR_BGRA2RGB)
-        cv2.imwrite(path, im)
+        _imwrite_utf8(path, im)
 
     def save_all_images(rendered_images, split):
         with ThreadPoolExecutor() as executor:
@@ -448,14 +471,14 @@ def eval(config: TrainerConfig):
     lpips_alex_fun = LearnedPerceptualImagePatchSimilarity(net_type="alex", normalize=True).to(device)
 
     def load_image(filename):
-        im = cv2.imread(filename, cv2.IMREAD_UNCHANGED)
+        im = _imread_utf8(filename, cv2.IMREAD_UNCHANGED)
         im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
         im = torch.from_numpy(im).float().to(device) / \
             (65535 if im.dtype == np.uint16 else 255)
         return im[None].permute(0, 3, 1, 2)
 
     def load_mask(filename):
-        im = cv2.imread(filename)
+        im = _imread_utf8(filename, cv2.IMREAD_COLOR)
         if len(im.shape) == 3:
             im = im[..., 0]
         im = torch.from_numpy(im).float().to(device) / 255.0

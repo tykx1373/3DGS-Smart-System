@@ -1,4 +1,5 @@
 #include "gs_renderer.h"
+#include "utf8_path.h"
 
 
 size_t VulkanGSPipelineBuffers::getTotalAllocSize() {
@@ -460,7 +461,7 @@ T VulkanGSPipeline::readElement(const _VulkanBuffer& buffer, size_t index) {
 template<typename T>
 void VulkanGSPipeline::dumpRawBytesToFile(Buffer<T>& buffer, std::string filename) {
     copyFromDevice(buffer);
-    FILE* fp = fopen(filename.c_str(), "wb");
+    FILE* fp = vksplat_util::openFile(filename, "wb");
     if (!fp) throw std::runtime_error("Error opening file `" + filename + "`");
     fwrite(buffer.data(), sizeof(T), buffer.size(), fp);
     fclose(fp);

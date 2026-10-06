@@ -15,6 +15,11 @@
 #define STBI_NO_PIC
 #define STBI_NO_PNM
 
+// stbi_load() receives paths as UTF-8 bytes from Python. Without this, stb opens
+// them through the ANSI codepage, so any non-ASCII path fails to load; with it,
+// stb converts to UTF-16 and uses _wfopen (see stbi__fopen).
+#define STBI_WINDOWS_UTF8
+
 #include "stb_image.h"
 
 

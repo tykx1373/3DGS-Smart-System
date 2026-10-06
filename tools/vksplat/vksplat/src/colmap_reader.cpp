@@ -1,4 +1,5 @@
 #include "colmap_reader.h"
+#include "utf8_path.h"
 
 #include <iostream>
 #include <fstream>
@@ -130,7 +131,7 @@ const std::map<std::string, ColmapReader::CameraModel> ColmapReader::CAMERA_MODE
 
 std::map<int, ColmapReader::Camera> ColmapReader::readCamerasBinary(const std::string& path) {
     std::map<int, Camera> cameras;
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(vksplat_util::utf8Path(path), std::ios::binary);
     
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + path);
@@ -161,7 +162,7 @@ std::map<int, ColmapReader::Camera> ColmapReader::readCamerasBinary(const std::s
 
 std::map<int, ColmapReader::Image> ColmapReader::readImagesBinary(const std::string& path) {
     std::map<int, Image> images;
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(vksplat_util::utf8Path(path), std::ios::binary);
     
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + path);
@@ -213,7 +214,7 @@ std::map<int, ColmapReader::Image> ColmapReader::readImagesBinary(const std::str
 
 std::map<uint64_t, ColmapReader::Point3D> ColmapReader::readPoints3DBinary(const std::string& path) {
     std::map<uint64_t, Point3D> points3D;
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(vksplat_util::utf8Path(path), std::ios::binary);
     
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + path);
@@ -262,7 +263,7 @@ std::map<uint64_t, ColmapReader::Point3D> ColmapReader::readPoints3DBinary(const
 
 std::map<int, ColmapReader::Camera> ColmapReader::readCamerasText(const std::string& path) {
     std::map<int, Camera> cameras;
-    std::ifstream file(path);
+    std::ifstream file(vksplat_util::utf8Path(path));
     
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + path);
@@ -297,7 +298,7 @@ std::map<int, ColmapReader::Camera> ColmapReader::readCamerasText(const std::str
 
 std::map<int, ColmapReader::Image> ColmapReader::readImagesText(const std::string& path) {
     std::map<int, Image> images;
-    std::ifstream file(path);
+    std::ifstream file(vksplat_util::utf8Path(path));
     
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + path);
@@ -346,7 +347,7 @@ std::map<int, ColmapReader::Image> ColmapReader::readImagesText(const std::strin
 
 std::map<uint64_t, ColmapReader::Point3D> ColmapReader::readPoints3DText(const std::string& path) {
     std::map<uint64_t, Point3D> points3D;
-    std::ifstream file(path);
+    std::ifstream file(vksplat_util::utf8Path(path));
     
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open file: " + path);
