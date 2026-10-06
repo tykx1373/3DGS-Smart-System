@@ -543,9 +543,20 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
     if ($condaPython) {
         Write-Host "  Using env python: $condaPython"
 
-        # Install CPU-only PyTorch + torchmetrics (from PyTorch CPU index, no CUDA bloat)
-        $torchInstalled = & $condaPython -c "import torch; print('ok')" 2>$null
-        if ($torchInstalled -ne "ok") {
+        # Install CPU-only PyTorch + torchmetrics (from PyTorch CPU index, no CUDA bloat).
+        # Probe with ErrorActionPreference=Continue: on a fresh machine torch is absent,
+        # so the probe writes a traceback to stderr; under the global "Stop" setting that
+        # becomes a terminating NativeCommandError and aborts this section before torch
+        # is ever installed (the script would then fail on every re-run).
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $torchOut = (& $condaPython -c "import torch; print('ok')" 2>&1 | Out-String)
+        $pyVer = (& $condaPython -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>&1 | Out-String).Trim()
+        $ErrorActionPreference = $prevEAP
+
+        if ($torchOut -notmatch "(?m)^ok\s*$") {
+            Write-Host "  torch probe output:"
+            ($torchOut.Trim() -split "`r?`n") | Where-Object { $_ } | ForEach-Object { Write-Host "    $_" }
             Write-Host "  Installing CPU-only PyTorch + torchmetrics..."
             cmd /c "`"$condaPython`" -m pip install torch torchmetrics --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
             if ($LASTEXITCODE -ne 0) {
@@ -556,7 +567,6 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
         }
 
         # Determine Python ABI version (e.g. 310 for Python 3.10)
-        $pyVer = & $condaPython -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>$null
         $prebuiltPyd = Join-Path $vksplatPy "vksplat.cp$pyVer-win_amd64.pyd"
 
         if (Test-Path $prebuiltPyd) {
