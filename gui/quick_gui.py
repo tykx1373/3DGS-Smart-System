@@ -677,16 +677,23 @@ class QuickSplatApp:
         ctk.CTkComboBox(r2, variable=self.vs_cache_var,
                         values=["cpu", "gpu"], width=80, state="readonly").pack(side="left", padx=4)
         ctk.CTkLabel(r2, text="图像分辨率:", width=90, anchor="w").pack(side="left", padx=(12, 0))
-        self.res_var = tk.StringVar(value=RES_AUTO)
+        saved_res = self.cfg.get("res_choice", RES_AUTO)
+        if saved_res not in list(RES_DIR_MAP) + [RES_AUTO]:
+            saved_res = RES_AUTO
+        self.res_var = tk.StringVar(value=saved_res)
         ctk.CTkComboBox(r2, variable=self.res_var,
                         values=[RES_AUTO] + list(RES_DIR_MAP),
                         width=140, state="readonly").pack(side="left", padx=4)
 
         r3 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
         r3.pack(fill="x", pady=(4, 0))
-        self.lpips_dl_var = tk.BooleanVar(value=False)
+        self.lpips_dl_var = tk.BooleanVar(value=bool(self.cfg.get("lpips_download", False)))
         ctk.CTkCheckBox(r3, text="允许联网下载 LPIPS 权重（约 760 MB，国内可能很慢）",
                         variable=self.lpips_dl_var).pack(side="left")
+
+        # 这两项改了就写回配置（在设初值之后挂 trace，避免启动时白写一次）
+        self.res_var.trace_add("write", lambda *_: self._save_options())
+        self.lpips_dl_var.trace_add("write", lambda *_: self._save_options())
 
         ctk.CTkLabel(af, text="COLMAP 选项", font=FONT_STEP).pack(anchor="w", pady=(12, 4))
         rc = ctk.CTkFrame(af, fg_color="transparent")
@@ -746,6 +753,19 @@ class QuickSplatApp:
         quality_map = {"快速": "fast", "标准": "standard", "高质量": "high"}
         q = quality_map.get(quality, "standard")
         return os.path.join(ws_dir, f"vksplat_{steps}steps_{q}.ply")
+
+    def _find_new_output_ply(self, output_dir, existing_dirs):
+        """本次新生成的输出目录里是否有 splat.ply。
+        用来判断“训练其实已经完成”，只是之后评测阶段失败了。"""
+        try:
+            for d in os.listdir(output_dir):
+                full = os.path.join(output_dir, d)
+                if os.path.isdir(full) and d not in existing_dirs:
+                    if os.path.isfile(os.path.join(full, "splat.ply")):
+                        return True
+        except Exception:
+            pass
+        return False
 
     def _find_latest_ply(self, ws_dir):
         # Workspace may not exist yet (new dataset) - do not crash on listdir.
@@ -873,9 +893,16 @@ class QuickSplatApp:
     def _browse_img(self):
         p = filedialog.askdirectory()
         if p:
+            n_imgs = self._count_images(p)
+            if n_imgs == 0:
+                # 否则会生成 "..._0imgs_gs" 这种没意义的工作区，后面还会跑到空数据上
+                exts = "、".join(e.lstrip(".") for e in IMAGE_EXTS)
+                messagebox.showwarning(
+                    "这个文件夹里没有照片",
+                    f"在\n{p}\n里没有找到支持的图片（{exts}）。\n\n请选择装着照片的文件夹。")
+                return
             self.img_var.set(relativize_path(p))
             name = os.path.basename(p.rstrip("/\\"))
-            n_imgs = self._count_images(p)
             ws_rel = os.path.join("workspaces", f"{name}_{n_imgs}imgs_gs")
             ws_abs = resolve_path(ws_rel)
 
@@ -919,8 +946,15 @@ class QuickSplatApp:
         self.cfg["colmap_path"] = self.colmap_var.get()
         self.cfg["vkgs_exe"] = self.vkgs_var.get()
         self.cfg["vksplat_python"] = self.vksplat_py_var.get()
+        self._save_options()
         save_config(self.cfg)
-        self._log("[OK] 路径已保存到配置文件。")
+        self._log("[OK] 路径与选项已保存到配置文件。")
+
+    def _save_options(self):
+        """记住高级选项里这两项：改了就存，不必再点“保存路径配置”。"""
+        self.cfg["res_choice"] = self.res_var.get()
+        self.cfg["lpips_download"] = bool(self.lpips_dl_var.get())
+        save_config(self.cfg)
 
     # --------------------------------------------------------------- log ----
     def _log(self, text):
@@ -1548,7 +1582,7 @@ if __name__ == "__main__":
             ckpt_ply = os.path.join(ws_dir, "checkpoint.ply")
             ckpt_step = os.path.join(ws_dir, "checkpoint.ply.step")
             if not (os.path.isfile(ckpt_ply) and os.path.isfile(ckpt_step)):
-                self._log("[WARN] 训练异常退出，但没有可用恢复点（崩溃在首个存档点之前），无法自动续训。")
+                self._log("[WARN] 训练异常退出，工作区没有可用恢复点，无法自动续训。")
                 break
             if retries >= TRAIN_MAX_RETRIES:
                 self._log(f"[FAIL] 已自动续训 {TRAIN_MAX_RETRIES} 次仍未成功，停止。")
@@ -1567,7 +1601,13 @@ if __name__ == "__main__":
         except Exception:
             pass
         if not ok:
-            return False
+            # 退出码非 0 不代表模型没训出来：train_main 是“先训练、后评测”，
+            # 评测阶段的失败（例如 LPIPS 权重下不下来）也会让退出码变成 1。
+            # 只要这次新生成的目录里有 splat.ply，就照常收取，别把训好的模型丢掉。
+            if not self._find_new_output_ply(output_dir, existing_dirs):
+                return False
+            self._log("[WARN] 训练进程非正常退出，但已找到 PLY 产物 —— 继续收取模型"
+                      "（评测可能未完成，指标不全）。")
 
         quality_en = {"快速": "fast", "标准": "standard", "高质量": "high"}.get(quality, "standard")
         target_name = f"vksplat_{steps}steps_{quality_en}"
@@ -1722,9 +1762,14 @@ if __name__ == "__main__":
                 self._log("[FAIL] 图片文件夹无效。")
                 return
 
+            n_imgs = self._count_images(img_dir)
+            if n_imgs == 0:
+                self.root.after(0, self._set_status, "该文件夹里没有找到图片，请重新选择。")
+                self._log(f"[FAIL] 图片文件夹里没有支持的图片: {img_dir}")
+                return
+
             if not ws_dir:
                 name = os.path.basename(img_dir.rstrip("/\\")) or "project"
-                n_imgs = self._count_images(img_dir)
                 ws_dir = os.path.join(PROJECT_ROOT, "workspaces", f"{name}_{n_imgs}imgs_gs")
                 self.root.after(0, self.ws_var.set, relativize_path(ws_dir))
 
