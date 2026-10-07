@@ -114,6 +114,13 @@ RES_DIR_MAP = {
 RES_DEFAULT_BY_QUALITY = {"快速": "images_4", "标准": "images_2", "高质量": "images"}
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 
+# 质量档位 -> (训练步数, 说明)。档位只给默认值，步数/分辨率都能在高级选项里覆盖。
+QUALITY_PRESETS = {
+    "快速": (5000, "约 2~3 分钟（1/4 分辨率），快速预览轮廓"),
+    "标准": (15000, "约 8~10 分钟（半分辨率），推荐日常使用"),
+    "高质量": (30000, "约 20 分钟+（全分辨率），细节最丰富"),
+}
+
 # tqdm 走 stderr 且用 \r 刷新，会把 stdout 的 PROGRESS 标记挤到行中间，
 # 因此这里不要求行首匹配，而是在整行内查找进度标记。
 _PROGRESS_RE = re.compile(r"PROGRESS:\s*(\d+)/(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)")
@@ -343,6 +350,21 @@ def save_config(cfg):
         pass
 
 
+def _cfg_int(cfg, key, default, lo, hi):
+    """从配置里取整数；缺失、类型不对或越界都退回默认值。"""
+    try:
+        v = int(cfg.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return v if lo <= v <= hi else default
+
+
+def _cfg_choice(cfg, key, valid, default):
+    """从配置里取枚举值；不在候选里就退回默认值。"""
+    v = cfg.get(key)
+    return v if v in valid else default
+
+
 def _make_group(parent, title):
     """创建带标题的分组容器（替代 ttk.LabelFrame）。"""
     outer = ctk.CTkFrame(parent, corner_radius=8)
@@ -431,15 +453,19 @@ class QuickSplatApp:
         r2 = ctk.CTkFrame(main, fg_color="transparent")
         r2.pack(fill="x", pady=4)
         ctk.CTkLabel(r2, text="质量档位：", width=100, anchor="w").pack(side="left")
-        self.quality_var = tk.StringVar(value="标准")
+        self.quality_var = tk.StringVar(
+            value=_cfg_choice(self.cfg, "quality", QUALITY_PRESETS, "标准"))
         self._quality_radios = []
         for text in ("快速", "标准", "高质量"):
-            rb = ctk.CTkRadioButton(r2, text=text, value=text, variable=self.quality_var,
-                                    command=self._apply_quality_preset)
+            rb = ctk.CTkRadioButton(r2, text=text, value=text, variable=self.quality_var)
             rb.pack(side="left", padx=10)
             self._quality_radios.append(rb)
         self.quality_hint = ctk.CTkLabel(main, text="", font=FONT_HINT, text_color="#888")
         self.quality_hint.pack(anchor="w", pady=(0, 4))
+        self._refresh_quality_hint()
+        # 用 trace 而不是 radio 的 command：CTk 单选钮在构造阶段就会触发一次
+        # command，那会把刚从配置恢复出来的训练步数覆盖成档位默认值。
+        self.quality_var.trace_add("write", lambda *_: self._on_quality_changed())
 
         # 大按钮行
         btns = ctk.CTkFrame(main, fg_color="transparent")
@@ -497,7 +523,8 @@ class QuickSplatApp:
         self.log_btn.pack(fill="x", padx=16, pady=(2, 0))
         self._build_log_window()
 
-        self._apply_quality_preset()
+        # 这里不能调 _apply_quality_preset()：它会把刚从配置恢复出来的训练步数
+        # 覆盖成档位默认值。档位提示已由 _refresh_quality_hint() 填好。
         self._refresh_backend_opts()
         self._install_tooltips()
 
@@ -664,8 +691,9 @@ class QuickSplatApp:
         r1 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
         r1.pack(fill="x")
         ctk.CTkLabel(r1, text="训练步数:", width=90, anchor="w").pack(side="left")
-        self.vs_steps_var = tk.IntVar(value=15000)
+        self.vs_steps_var = tk.IntVar(value=_cfg_int(self.cfg, "train_steps", 15000, 100, 10 ** 7))
         ctk.CTkEntry(r1, textvariable=self.vs_steps_var, width=100).pack(side="left", padx=4)
+        self.vs_steps_var.trace_add("write", lambda *_: self._save_options())
         self.vs_mcmc_var = tk.BooleanVar(value=True)
         ctk.CTkCheckBox(r1, text="MCMC 优化",
                         variable=self.vs_mcmc_var).pack(side="left", padx=12)
@@ -699,8 +727,9 @@ class QuickSplatApp:
         rc = ctk.CTkFrame(af, fg_color="transparent")
         rc.pack(fill="x", pady=3)
         ctk.CTkLabel(rc, text="最大图片尺寸:", width=130, anchor="w").pack(side="left")
-        self.max_img_var = tk.IntVar(value=1600)
+        self.max_img_var = tk.IntVar(value=_cfg_int(self.cfg, "max_image_size", 1600, 256, 20000))
         ctk.CTkEntry(rc, textvariable=self.max_img_var, width=100).pack(side="left", padx=4)
+        self.max_img_var.trace_add("write", lambda *_: self._save_options())
 
         ctk.CTkLabel(af, text="分步操作", font=FONT_STEP).pack(anchor="w", pady=(12, 4))
         sb = ctk.CTkFrame(af, fg_color="transparent")
@@ -777,15 +806,18 @@ class QuickSplatApp:
             return None
         return max(plys, key=os.path.getmtime)
 
+    def _on_quality_changed(self):
+        """用户切换质量档位：套用该档位默认步数，并记住这次选择。"""
+        self._apply_quality_preset()
+        self._save_options()
+
     def _apply_quality_preset(self):
-        q = self.quality_var.get()
-        mapping = {
-            "快速":   (5000,  "约 2~3 分钟（1/4 分辨率），快速预览轮廓"),
-            "标准":   (15000, "约 8~10 分钟（半分辨率），推荐日常使用"),
-            "高质量": (30000, "约 20 分钟+（全分辨率），细节最丰富"),
-        }
-        steps, hint = mapping.get(q, (15000, ""))
+        steps, _hint = QUALITY_PRESETS.get(self.quality_var.get(), (15000, ""))
         self.vs_steps_var.set(steps)
+        self._refresh_quality_hint()
+
+    def _refresh_quality_hint(self):
+        steps, hint = QUALITY_PRESETS.get(self.quality_var.get(), (15000, ""))
         self.quality_hint.configure(text=f"→ {hint}（训练步数 {steps}）")
 
     def _set_params_enabled(self, enabled):
@@ -951,9 +983,17 @@ class QuickSplatApp:
         self._log("[OK] 路径与选项已保存到配置文件。")
 
     def _save_options(self):
-        """记住高级选项里这两项：改了就存，不必再点“保存路径配置”。"""
+        """记住质量档位与高级选项：改了就写回配置，不必再点“保存路径配置”。
+        输入框处于半成品状态（例如被清空）时 get() 会抛错，跳过这一次保存即可。"""
+        self.cfg["quality"] = self.quality_var.get()
         self.cfg["res_choice"] = self.res_var.get()
         self.cfg["lpips_download"] = bool(self.lpips_dl_var.get())
+        for key, var in (("train_steps", self.vs_steps_var),
+                         ("max_image_size", self.max_img_var)):
+            try:
+                self.cfg[key] = int(var.get())
+            except Exception:
+                pass
         save_config(self.cfg)
 
     # --------------------------------------------------------------- log ----
