@@ -34,7 +34,7 @@ typedef int32_t sortingKey_t;
 #define _THROW_ERROR_ALWAYS(message) do { \
     std::string msg = std::string(message) + \
         ". From file `" + __FILE__ + "`, line " + std::to_string(__LINE__); \
-    printf("\033[91m%s\033[m\n", msg.c_str()); fflush(stdout); \
+    fprintf(stderr, "\033[91m%s\033[m\n", msg.c_str()); fflush(stderr); \
     throw std::runtime_error(msg); \
   } while(0)
 

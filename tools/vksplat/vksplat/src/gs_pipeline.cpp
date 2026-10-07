@@ -191,8 +191,15 @@ void VulkanGSPipeline::createInstance() {
         create_info.ppEnabledLayerNames = &validation_layer_name;
     }
     
-    if (vkCreateInstance(&create_info, nullptr, &instance) != VK_SUCCESS)
-        _THROW_ERROR("Failed to create instance");
+    // Deliberately not _THROW_ERROR: with ENABLE_ASSERTION=0 (config.h) it expands
+    // to an empty statement, so a failed vkCreateInstance was silently ignored and
+    // the next vkEnumeratePhysicalDevices got a null instance and crashed the whole
+    // process. "No usable Vulkan device" is an expected situation (that is exactly
+    // what the environment check reports), so it has to surface as an exception.
+    VkResult create_result = vkCreateInstance(&create_info, nullptr, &instance);
+    if (create_result != VK_SUCCESS)
+        _THROW_ERROR_ALWAYS("Failed to create Vulkan instance (VkResult " +
+                            std::to_string(static_cast<int>(create_result)) + ")");
 }
 
 void VulkanGSPipeline::selectPhysicalDevice(int device_id) {
@@ -431,7 +438,14 @@ std::vector<VulkanGSPipeline::DeviceCaps> VulkanGSPipeline::enumeratePhysicalDev
     // disturbing a pipeline that is already initialized.
     VkInstance prev_instance = instance;
     instance = VK_NULL_HANDLE;
-    createInstance();
+    try {
+        createInstance();
+    } catch (...) {
+        // createInstance() throws when there is no usable Vulkan driver; leave the
+        // pipeline as it was instead of keeping a null instance around.
+        instance = prev_instance;
+        throw;
+    }
 
     uint32_t device_count = 0;
     std::vector<DeviceCaps> result;
