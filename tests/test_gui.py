@@ -303,6 +303,14 @@ class TestAppRestoresSettings(unittest.TestCase):
         self.assertEqual(saved["max_image_size"], 1200)
         self.assertEqual(saved["train_steps"], 9000)
 
+    def test_no_duplicate_tooltip_texts(self):
+        """一行里的标签、输入框、浏览按钮会各自匹配到同一段说明文字。
+        以前没按文字去重，同一行会冒出两三个内容完全一样的「?」。"""
+        texts = [t.text for t in getattr(self.app, "_tips", [])]
+        self.assertTrue(texts, "应该挂上悬浮说明")
+        dupes = {t for t in texts if texts.count(t) > 1}
+        self.assertEqual(dupes, set(), f"同一段说明被挂了多次: {dupes}")
+
 
 if __name__ == "__main__":
     unittest.main()

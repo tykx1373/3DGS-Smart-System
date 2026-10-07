@@ -138,11 +138,9 @@ _TQDM_RE = re.compile(
 # 各控件的悬浮说明。以控件文字为键；输入框/下拉框这类没有自身文字的控件，
 # 用同一行里紧邻的标签文字补位（见 _install_tooltips）。
 TIP_TEXTS = {
-    "照片文件夹：": "装照片的文件夹。建议绕物体拍一圈，相邻照片重叠 60% 以上，30~200 张。",
+    # 原则：常驻在界面上的提示（蓝字/灰字行）说过的，这里不再重复，只补细节。
+    "照片文件夹：": "支持 jpg / jpeg / png / bmp / tif / tiff 六种格式，文件夹里可以只有照片。",
     "质量档位：": "决定训练步数、高斯点数上限和默认分辨率。这三项都能在高级选项里单独调整。",
-    "快速": "5000 步，默认 1/4 分辨率，约 2~3 分钟。用来快速看轮廓。",
-    "标准": "15000 步，默认半分辨率，约 8~10 分钟。推荐日常使用。",
-    "高质量": "30000 步，默认原分辨率，约 20 分钟以上。细节最丰富。",
     "开始生成 3D 模型": "依次执行：COLMAP 稀疏重建 → VkSplat 训练 → 打开 VKGS 查看器。",
     "停止": "安全停止：写入 STOP 标记，让训练在当前步收尾并存档，下次可从存档继续。",
     "查看 3D 模型": "用 VKGS 打开工作区里的 PLY 模型（可同时开多个窗口对比）。",
@@ -152,8 +150,7 @@ TIP_TEXTS = {
     "COLMAP:": "COLMAP 可执行文件位置（colmap.exe 或 COLMAP.bat）。含中文的路径也可以。",
     "VkSplat Python:": "运行 VkSplat 训练用的 Python 解释器，通常就是 env/vksplat/python.exe。",
     "VKGS 查看器:": "vk_gaussian_splatting.exe，用来实时查看训练出来的模型。",
-    "工作区文件夹:": "每个数据集对应一个工作区，里面放 images / sparse / database.db / checkpoint。"
-                    "留空则自动生成到 workspaces/ 下。",
+    "工作区文件夹:": "每个数据集对应一个工作区，里面放 images / sparse / database.db / checkpoint。",
     "训练步数:": "迭代次数，越多细节越好、耗时越长。"
                  "注意：若工作区里已存在更靠后的存档（checkpoint），把步数改小不会产生新的训练。",
     "MCMC 优化": "MCMC 稠密化策略：高斯点数增长更快、质量更好。默认开启。",
@@ -162,7 +159,7 @@ TIP_TEXTS = {
                    "COLMAP 始终用原图，重建质量不受影响。",
     "允许联网下载 LPIPS 权重（约 760 MB，国内可能很慢）":
         "不勾：权重未缓存时跳过 LPIPS，只输出 PSNR / SSIM，不会卡住。"
-        "勾上：联网下载约 760 MB 后计算 LPIPS。",
+        "勾上：会先联网下载权重再计算 LPIPS。",
     "最大图片尺寸:": "COLMAP 特征提取时把图片长边缩到该值以内。越大越精确也越慢（默认 1600）。",
     "只用 COLMAP（空间定位）": "只跑稀疏重建（生成 sparse/0），不训练。",
     "只用训练（生成模型）": "复用已有的 sparse/0，只跑训练，不会重跑 COLMAP。",
@@ -557,6 +554,13 @@ class QuickSplatApp:
         """在控件旁插一个「?」，说明挂在「?」上——「?」是叶子小控件，进出事件可靠。"""
         if not text:
             return
+        # 同一段说明只挂一个：一行里的标签、输入框、浏览按钮会各自匹配到同一段文字，
+        # 不去重的话一行里会冒出两三个内容完全一样的「?」。
+        if not hasattr(self, "_tipped_texts"):
+            self._tipped_texts = set()
+        if text in self._tipped_texts:
+            return
+        self._tipped_texts.add(text)
         # 底部工具栏的两个按钮本身够宽够好点，说明直接挂在按钮上，
         # 不必再插一个「?」占位置。
         if target is getattr(self, "log_btn", None) or target is getattr(self, "adv_btn", None):
