@@ -44,6 +44,44 @@ function Invoke-EnvSelfCheck($pythonExe) {
     }
 }
 
+# Domestic PyPI mirrors, tried in order. A fresh machine has no user-level
+# pip.ini, so pip would talk to pypi.org / download.pytorch.org directly, which
+# frequently times out in China - that is where the last field failures got
+# stuck. Note the Windows torch / torchvision wheels on PyPI are already
+# CPU-only (measured: torch 2.14.1 win_amd64 = 118 MB, the CUDA build is about
+# 2.5 GB), so a plain PyPI mirror is enough and the PyTorch index is only a
+# fallback.
+$pipMirrors = @(
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple/",
+    "https://mirrors.ustc.edu.cn/pypi/simple/"
+)
+
+function Install-PipPackages($pythonExe, [string[]]$pipArgs, [string]$what, [string[]]$fallbackArgs = @()) {
+    # Install through domestic mirrors first, then fall back to the default
+    # index. Output is inherited (not piped) so pip's progress display and any
+    # non-ASCII text survive. ErrorActionPreference is lowered because
+    # PowerShell 5.1 turns a native command's stderr into a terminating error.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        foreach ($mirror in $pipMirrors) {
+            Write-Host "  Installing $what" -ForegroundColor DarkGray
+            Write-Host "    index: $mirror" -ForegroundColor DarkGray
+            & $pythonExe -m pip install @pipArgs -i $mirror --timeout 30 --retries 2 2>&1 |
+                ForEach-Object { Write-Host "    $_" }
+            if ($LASTEXITCODE -eq 0) { return $true }
+            Write-Host "    [WARN] mirror not usable, trying the next one..." -ForegroundColor Yellow
+        }
+        Write-Host "  [WARN] No domestic mirror worked; falling back to the default index." -ForegroundColor Yellow
+        & $pythonExe -m pip install @pipArgs @fallbackArgs --timeout 30 --retries 2 2>&1 |
+            ForEach-Object { Write-Host "    $_" }
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
+
 function Get-LatestReleaseAssets($repo) {
     $apiUrl = "https://api.github.com/repos/$repo/releases/latest"
     try {
@@ -594,8 +632,12 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             Write-Host "  torch probe output:"
             ($torchOut.Trim() -split "`r?`n") | Where-Object { $_ } | ForEach-Object { Write-Host "    $_" }
             Write-Host "  Installing CPU-only PyTorch + torchvision + torchmetrics..."
-            cmd /c "`"$condaPython`" -m pip install torch torchvision torchmetrics --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
-            if ($LASTEXITCODE -ne 0) {
+            $okTorch = Install-PipPackages -pythonExe $condaPython `
+                -pipArgs @("torch", "torchvision", "torchmetrics") `
+                -what "CPU-only PyTorch + torchvision + torchmetrics" `
+                -fallbackArgs @("--index-url", "https://download.pytorch.org/whl/cpu",
+                                "--extra-index-url", "https://pypi.org/simple")
+            if (-not $okTorch) {
                 Write-Host "[WARN] torch install failed. Try: pip install torch torchvision torchmetrics" -ForegroundColor Yellow
             }
         } else {
@@ -622,8 +664,10 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             # No matching prebuilt .pyd - need to compile (requires Vulkan SDK + MSVC)
             Write-Host "  No prebuilt .pyd for Python $pyVer. Compiling C++ extension..."
             Write-Host "  (Requires Vulkan SDK + MSVC. Install from: https://vulkan.lunarg.com/sdk/home#windows)"
-            cmd /c "`"$condaPython`" -m pip install -e `"$vksplatPy`" --no-build-isolation 2>&1" 2>&1 | ForEach-Object { Write-Host "  $_" }
-            if ($LASTEXITCODE -eq 0) {
+            $okEditable = Install-PipPackages -pythonExe $condaPython `
+                -pipArgs @("-e", $vksplatPy, "--no-build-isolation") `
+                -what "vksplat (editable build)"
+            if ($okEditable) {
                 # pip install -e writes a hardcoded absolute path into the editable finder; fix it
                 Set-VksplatRelocatable -CondaPython $condaPython
                 Write-Host "[OK] vksplat installed (compiled)" -ForegroundColor Green
