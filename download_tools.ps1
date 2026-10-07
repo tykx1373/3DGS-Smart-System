@@ -11,6 +11,39 @@ function Write-Section($msg) {
     Write-Host "=== $msg ===" -ForegroundColor Cyan
 }
 
+function Invoke-EnvSelfCheck($pythonExe) {
+    # Self-check right after installation: state clearly whether this machine can
+    # actually run, instead of letting the user find out only when run.bat fails
+    # (which is exactly where previous setups went wrong).
+    # NOTE: keep this file ASCII-only - Windows PowerShell 5.1 reads a .ps1 with
+    # no BOM as ANSI, which mangles non-ASCII bytes (a GBK lead byte can even
+    # swallow the following newline). doctor.py prints the Chinese output.
+    $doctor = Join-Path $PSScriptRoot "doctor.py"
+    if (-not $pythonExe -or -not (Test-Path $doctor)) {
+        Write-Host "[WARN] Skipping self-check (no doctor.py or env python)." -ForegroundColor Yellow
+        return
+    }
+    Write-Host ""
+    Write-Host "=== Environment self-check (doctor) ===" -ForegroundColor Cyan
+    # Run it inherited, not captured: doctor enables ANSI colors itself and the
+    # console code page handles its Chinese output.
+    # Lower ErrorActionPreference for the call: PS 5.1 turns a native command's
+    # stderr into a terminating error, which must not abort this summary if
+    # doctor itself throws.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $pythonExe $doctor
+    $doctorRc = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    Write-Host ""
+    if ($doctorRc -eq 0) {
+        Write-Host "[OK] Self-check passed." -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] Self-check reported problems (see the list above)." -ForegroundColor Yellow
+        Write-Host "       You can still try run.bat; if it fails, send the output above." -ForegroundColor Yellow
+    }
+}
+
 function Get-LatestReleaseAssets($repo) {
     $apiUrl = "https://api.github.com/repos/$repo/releases/latest"
     try {
@@ -618,6 +651,7 @@ if ($failed.Count -eq 0) {
     if (Test-Path $vksplatDir) { Write-Host "     VkSplat: $vksplatDir (source + built)" }
     Write-Host ""
     Write-Host "You can now run: run.bat" -ForegroundColor Cyan
+    Invoke-EnvSelfCheck $condaPython
     exit 0
 } else {
     Write-Host "[FAIL] The following tools failed. Please handle manually:" -ForegroundColor Red
@@ -644,5 +678,6 @@ if ($failed.Count -eq 0) {
         Write-Host ""
     }
     Write-Host "  After extracting to tools/, you do NOT need to re-run this script."
+    Invoke-EnvSelfCheck $condaPython
     exit 1
 }
