@@ -20,6 +20,7 @@ import time
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
+from collections import deque
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -37,6 +38,7 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "quick_gui_config.json")
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 import syscheck  # noqa: E402
+import diagnostics  # noqa: E402
 
 # 所有默认路径相对 PROJECT_ROOT 存储
 DEFAULT_COLMAP = os.path.join("tools", "colmap-x64-windows-cuda", "COLMAP.bat")
@@ -147,6 +149,8 @@ TIP_TEXTS = {
     "环境自检": "检查 Python / vksplat 模块 / 依赖 / Vulkan 设备 / COLMAP / VKGS / 磁盘空间，"
                 "并给出“能不能跑”和预计耗时。",
     "运行日志": "切换独立日志窗口。完整日志同时写入 logs/年月日.log。",
+    "导出诊断": "把最近日志、环境自检结果和配置打成一个 zip（自动隐去用户名路径），"
+                "出问题时把这个 zip 发给开发者即可，不用手动贴日志。",
     "COLMAP:": "COLMAP 可执行文件位置（colmap.exe 或 COLMAP.bat）。含中文的路径也可以。",
     "VkSplat Python:": "运行 VkSplat 训练用的 Python 解释器，通常就是 env/vksplat/python.exe。",
     "VKGS 查看器:": "vk_gaussian_splatting.exe，用来实时查看训练出来的模型。",
@@ -390,6 +394,7 @@ class QuickSplatApp:
         self.stop_flag = False
 
         self._ips_recorded = False
+        self._last_failure_hint = None   # 同一次运行里，同一失败原因只讲一遍
         self._build_ui()
         # 内容高度随 DPI / 字体缩放变化，按实际请求尺寸设最小窗口，
         # 避免窗口被拖小或高缩放下把底部工具栏裁掉。
@@ -516,7 +521,7 @@ class QuickSplatApp:
         ctk.CTkLabel(prog, textvariable=self.progress_detail_var,
                      font=FONT_HINT, text_color="#888").pack(anchor="w")
 
-        # ---- 底部工具栏：高级选项 + 运行日志并成一行，不再各自独占一整行 ----
+        # ---- 底部工具栏：次要操作并成一行，不再各自独占一整行 ----
         footer = ctk.CTkFrame(self.root, fg_color="transparent")
         footer.pack(fill="x", padx=16, pady=(4, 12))
         self.adv_toggle_var = tk.StringVar(value="高级选项 ▼")
@@ -528,7 +533,11 @@ class QuickSplatApp:
         self.log_btn = ctk.CTkButton(footer, text="运行日志", command=self.toggle_log_window,
                                      height=32, fg_color="transparent", border_width=1,
                                      text_color=("#3b82f6", "#60a5fa"))
-        self.log_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.log_btn.pack(side="left", fill="x", expand=True, padx=6)
+        self.diag_btn = ctk.CTkButton(footer, text="导出诊断", command=self.export_diagnostics,
+                                      height=32, fg_color="transparent", border_width=1,
+                                      text_color=("#3b82f6", "#60a5fa"))
+        self.diag_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self._build_log_window()
 
         # 这里不能调 _apply_quality_preset()：它会把刚从配置恢复出来的训练步数
@@ -561,9 +570,10 @@ class QuickSplatApp:
         if text in self._tipped_texts:
             return
         self._tipped_texts.add(text)
-        # 底部工具栏的两个按钮本身够宽够好点，说明直接挂在按钮上，
+        # 底部工具栏的按钮本身够宽够好点，说明直接挂在按钮上，
         # 不必再插一个「?」占位置。
-        if target is getattr(self, "log_btn", None) or target is getattr(self, "adv_btn", None):
+        if target in (getattr(self, "log_btn", None), getattr(self, "adv_btn", None),
+                      getattr(self, "diag_btn", None)):
             self._add_tip(target, text)
             return
         # 注意：不要用 pack_info() 判断 fill —— CTkEntry 返回的是内部 Entry 的信息
@@ -658,6 +668,47 @@ class QuickSplatApp:
         else:
             self.log_window.deiconify()
             self.log_window.lift()
+
+    # ------------------------------------------------------- 导出诊断 ----
+    def export_diagnostics(self):
+        """把日志、环境自检结果和配置打包成 zip，省得让对方手动贴日志。
+
+        doctor 那一步会跑几秒（要问系统和显卡），放线程里做，免得界面卡住。
+        """
+        dest = diagnostics.default_dest(PROJECT_ROOT)
+        self.diag_btn.configure(state="disabled")
+        self._set_status("正在收集诊断信息...")
+        self._log(f"[INFO] 正在导出诊断包: {dest}")
+
+        def work():
+            error = None
+            try:
+                diagnostics.build_zip(dest, PROJECT_ROOT, python_exe=sys.executable)
+            except Exception as e:
+                error = e
+            if error is None:
+                self._log(f"[OK] 诊断包已导出: {dest}")
+            else:
+                self._log(f"[FAIL] 导出诊断包失败: {error}")
+            self.root.after(0, self._diagnostics_done, dest, error)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _diagnostics_done(self, dest, error):
+        self.diag_btn.configure(state="normal")
+        if error is not None:
+            self._set_status(f"导出诊断包失败: {error}")
+            messagebox.showerror("导出失败", f"没能生成诊断包：\n{error}")
+            return
+        self._set_status("诊断包已导出，把它发给开发者即可。")
+        if messagebox.askyesno("诊断包已导出",
+                               f"已生成：\n{dest}\n\n"
+                               f"内含最近日志、环境自检结果和配置（用户名路径已隐去）。\n\n"
+                               f"要现在打开所在文件夹吗？"):
+            try:
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(dest)])
+            except Exception as e:
+                self._log(f"[WARN] 无法打开文件夹: {e}")
 
     # --------------------------------------------------- advanced panel ----
     def _build_advanced_panel(self):
@@ -1128,7 +1179,7 @@ class QuickSplatApp:
         return exe, env
 
     # ----------------------------------------------------------- run cmd ----
-    def run_cmd(self, cmd_list, env=None, cwd=None, graceful_ws_dir=None):
+    def run_cmd(self, cmd_list, env=None, cwd=None, graceful_ws_dir=None, colmap=False):
         display = " ".join(f'"{c}"' if (" " in c or c == "") else c for c in cmd_list)
         self._log(">>> " + display)
         try:
@@ -1142,6 +1193,7 @@ class QuickSplatApp:
 
         graceful_requested = False
         graceful_deadline = None
+        tail = deque(maxlen=200)   # 保留输出尾部，失败时用来认原因
         for line in self.current_proc.stdout:
             if self.stop_flag and not graceful_requested:
                 if graceful_ws_dir:
@@ -1172,6 +1224,7 @@ class QuickSplatApp:
                 return False
             line = line.rstrip()
             if line:
+                tail.append(line)
                 self._log(line)
         self.current_proc.wait()
         rc = self.current_proc.returncode
@@ -1181,8 +1234,21 @@ class QuickSplatApp:
             return False
         if rc != 0:
             self._log(f"[FAIL] 退出码: {rc}")
+            self._explain_failure(rc, "\n".join(tail), colmap)
             return False
         return True
+
+    def _explain_failure(self, rc, output, colmap=False):
+        """把退出码翻译成人话。同一原因只讲一次，避免自动续训时重复刷屏。"""
+        hint = diagnostics.explain_failure(rc, output, colmap=colmap)
+        if not hint:
+            return
+        cause, advice = hint
+        if hint == self._last_failure_hint:
+            return
+        self._last_failure_hint = hint
+        self._log(f"[FAIL] 原因: {cause}")
+        self._log(f"[WARN] 建议: {advice}")
 
     # -------------------------------------------------------- junction ----
     def _make_junction(self, link, target):
@@ -1764,7 +1830,7 @@ if __name__ == "__main__":
             "--database_path", db_path,
             "--image_path", images_link,
             "--FeatureExtraction.max_image_size", str(max_img),
-        ], env=colmap_env):
+        ], env=colmap_env, colmap=True):
             return None, None, None
 
         if self.stop_flag:
@@ -1774,7 +1840,7 @@ if __name__ == "__main__":
         if not self.run_cmd([
             colmap_exe, "exhaustive_matcher",
             "--database_path", db_path,
-        ], env=colmap_env):
+        ], env=colmap_env, colmap=True):
             return None, None, None
 
         if self.stop_flag:
@@ -1786,7 +1852,7 @@ if __name__ == "__main__":
             "--database_path", db_path,
             "--image_path", images_link,
             "--output_path", sparse_dir,
-        ], env=colmap_env):
+        ], env=colmap_env, colmap=True):
             return None, None, None
 
         sparse_zero = self._ensure_sparse_zero(sparse_dir)
@@ -1809,6 +1875,7 @@ if __name__ == "__main__":
             self._log(f"[WARN] VKGS 查看器未配置。输出 PLY: {output_ply}")
 
     def pipeline_thread(self, do_colmap=True, do_train=True):
+        self._last_failure_hint = None   # 新的运行：允许重新给出失败原因
         try:
             img_dir = resolve_path(self.img_var.get().strip())
             ws_dir = resolve_path(self.ws_var.get().strip())
@@ -1838,7 +1905,8 @@ if __name__ == "__main__":
                                 "正在识别照片中的特征点并计算相机位置...（这一步最耗时）")
                 _, _, sparse_zero = self._run_colmap(img_dir, ws_dir)
                 if sparse_zero is None:
-                    self.root.after(0, self._set_status, "空间定位失败，请查看日志。")
+                    self.root.after(0, self._set_status,
+                                    "空间定位失败，请看日志里的「原因 / 建议」，或点「导出诊断」。")
                     return
             else:
                 sparse_zero = os.path.join(ws_dir, "sparse", "0")
@@ -1862,7 +1930,8 @@ if __name__ == "__main__":
                     if self.stop_flag:
                         self.root.after(0, self._set_status, "训练已安全停止，进度已保存，下次可继续。")
                     else:
-                        self.root.after(0, self._set_status, "模型训练失败，请查看日志。")
+                        self.root.after(0, self._set_status,
+                                        "模型训练失败，请看日志里的「原因 / 建议」，或点「导出诊断」。")
                     return
 
                 if self.stop_flag:
