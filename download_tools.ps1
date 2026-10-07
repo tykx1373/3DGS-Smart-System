@@ -664,6 +664,15 @@ if (-not (Test-Path (Join-Path $vksplatPy "setup.py"))) {
             # No matching prebuilt .pyd - need to compile (requires Vulkan SDK + MSVC)
             Write-Host "  No prebuilt .pyd for Python $pyVer. Compiling C++ extension..."
             Write-Host "  (Requires Vulkan SDK + MSVC. Install from: https://vulkan.lunarg.com/sdk/home#windows)"
+            # --no-build-isolation means pip will NOT fetch the build requirements
+            # declared in setup.py (pybind11, setuptools), so install them first -
+            # otherwise the build fails on a fresh machine.
+            $okBuildDeps = Install-PipPackages -pythonExe $condaPython `
+                -pipArgs @("pybind11", "setuptools") `
+                -what "build requirements (pybind11, setuptools)"
+            if (-not $okBuildDeps) {
+                Write-Host "  [WARN] Could not install the build requirements; the build may fail." -ForegroundColor Yellow
+            }
             $okEditable = Install-PipPackages -pythonExe $condaPython `
                 -pipArgs @("-e", $vksplatPy, "--no-build-isolation") `
                 -what "vksplat (editable build)"
