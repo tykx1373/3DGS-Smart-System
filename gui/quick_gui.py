@@ -394,6 +394,10 @@ class QuickSplatApp:
 
         self._ips_recorded = False
         self._build_ui()
+        # 内容高度随 DPI / 字体缩放变化，按实际请求尺寸设最小窗口，
+        # 避免窗口被拖小或高缩放下把底部工具栏裁掉。
+        self.root.update_idletasks()
+        self.root.minsize(self.root.winfo_reqwidth(), self.root.winfo_reqheight())
         self._poll_log()
 
         # 首次运行：自动弹出环境自检向导，先给结论再让用户开跑
@@ -408,14 +412,14 @@ class QuickSplatApp:
 
         # ---- 标题区 ----
         header = ctk.CTkFrame(self.root, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(14, 4))
+        header.pack(fill="x", padx=16, pady=(12, 2))
         ctk.CTkLabel(header, text="3D 照片重建", font=FONT_TITLE).pack(anchor="w")
         ctk.CTkLabel(header, text="把你拍的一组照片变成可旋转、可缩放的 3D 模型。",
                      font=FONT_HINT, text_color="#888").pack(anchor="w", pady=(2, 0))
 
         # ---- 步骤指示器 ----
         stepbar = ctk.CTkFrame(self.root, fg_color="transparent")
-        stepbar.pack(fill="x", padx=16, pady=(8, 2))
+        stepbar.pack(fill="x", padx=16, pady=(6, 2))
         self.step_labels = []
         step_infos = [
             ("①", "选择照片", "选一个装照片的文件夹"),
@@ -489,16 +493,10 @@ class QuickSplatApp:
                                         fg_color="transparent", border_width=1,
                                         text_color=("#3b82f6", "#60a5fa"))
         self.doctor_btn.pack(side="left", padx=4)
-        ctk.CTkLabel(btns, text="（可打开多个窗口对比，关闭窗口即退出）",
-                     font=FONT_HINT, text_color="#888").pack(side="left", padx=10)
+        # 这里原本还有一行“可打开多个窗口对比…”的灰字，与「查看 3D 模型」的
+        # 悬浮说明重复，挤在按钮行末尾会被裁掉，已删除（说明见“查看 3D 模型”的「?」）。
 
-        # ---- 高级选项切换 ----
-        self.adv_toggle_var = tk.StringVar(value="高级选项 ▼")
-        self.adv_btn = ctk.CTkButton(self.root, textvariable=self.adv_toggle_var,
-                                     command=self._toggle_advanced, height=32)
-        self.adv_btn.pack(fill="x", padx=16, pady=(2, 0))
-
-        # 高级选项独立窗口
+        # ---- 高级选项独立窗口（切换按钮统一放在底部工具栏）----
         self.adv_window = ctk.CTkToplevel(self.root)
         self.adv_window.title("高级选项")
         self.adv_window.geometry("860x700")
@@ -510,7 +508,7 @@ class QuickSplatApp:
 
         # ---- 进度区 ----
         prog = ctk.CTkFrame(self.root, fg_color="transparent")
-        prog.pack(fill="x", padx=16, pady=(6, 2))
+        prog.pack(fill="x", padx=16, pady=(8, 2))
         self.status_var = tk.StringVar(value="就绪。请先选择照片文件夹。")
         ctk.CTkLabel(prog, textvariable=self.status_var, font=FONT_STATUS, anchor="w").pack(fill="x")
         self.progress = ctk.CTkProgressBar(prog)
@@ -521,11 +519,19 @@ class QuickSplatApp:
         ctk.CTkLabel(prog, textvariable=self.progress_detail_var,
                      font=FONT_HINT, text_color="#888").pack(anchor="w")
 
-        # ---- 运行日志（独立窗口） ----
-        self.log_btn = ctk.CTkButton(self.root, text="运行日志", command=self.toggle_log_window,
+        # ---- 底部工具栏：高级选项 + 运行日志并成一行，不再各自独占一整行 ----
+        footer = ctk.CTkFrame(self.root, fg_color="transparent")
+        footer.pack(fill="x", padx=16, pady=(4, 12))
+        self.adv_toggle_var = tk.StringVar(value="高级选项 ▼")
+        self.adv_btn = ctk.CTkButton(footer, textvariable=self.adv_toggle_var,
+                                     command=self._toggle_advanced, height=32,
+                                     fg_color="transparent", border_width=1,
+                                     text_color=("#3b82f6", "#60a5fa"))
+        self.adv_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.log_btn = ctk.CTkButton(footer, text="运行日志", command=self.toggle_log_window,
                                      height=32, fg_color="transparent", border_width=1,
                                      text_color=("#3b82f6", "#60a5fa"))
-        self.log_btn.pack(fill="x", padx=16, pady=(2, 0))
+        self.log_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
         self._build_log_window()
 
         # 这里不能调 _apply_quality_preset()：它会把刚从配置恢复出来的训练步数
@@ -551,7 +557,8 @@ class QuickSplatApp:
         """在控件旁插一个「?」，说明挂在「?」上——「?」是叶子小控件，进出事件可靠。"""
         if not text:
             return
-        # 通栏按钮宽度已经占满，插「?」会挤压布局，直接挂在按钮本身（够大、好点）
+        # 底部工具栏的两个按钮本身够宽够好点，说明直接挂在按钮上，
+        # 不必再插一个「?」占位置。
         if target is getattr(self, "log_btn", None) or target is getattr(self, "adv_btn", None):
             self._add_tip(target, text)
             return
