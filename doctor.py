@@ -35,6 +35,17 @@ def _enable_ansi():
         pass
 
 
+def _make_output_safe():
+    """stdout 编码不一定是 UTF-8：CI runner 与英文版 Windows 上是 cp1252，
+    这时 print 中文会 UnicodeEncodeError 直接把整个进程带走。人读的输出改成
+    "编不出的字符替换掉"，显示成 ? 也比中途崩掉强；--json 那边则用
+    ensure_ascii=True 输出纯 ASCII，见 main()。"""
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+
+
 def _resolve(path):
     if not path:
         return None
@@ -59,6 +70,7 @@ def main(argv=None):
     parser.add_argument("--quality", default="标准", choices=["快速", "标准", "高质量"])
     parser.add_argument("--steps", type=int, default=15000, help="训练步数，用于估算训练耗时")
     args = parser.parse_args(argv)
+    _make_output_safe()
 
     cfg = _load_gui_config()
     colmap = _resolve(cfg.get("colmap_path"))
@@ -82,7 +94,10 @@ def main(argv=None):
                 for r in results
             ],
         }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        # ensure_ascii=True：这台机器的 stdout 未必是 UTF-8（CI 是 cp1252、英文版
+        # Windows 也是），中文直接打出去会 UnicodeEncodeError。转义成 \uXXXX 后
+        # 整份输出是纯 ASCII，经任何编码读写都不会坏。这与配置文件的做法一致。
+        print(json.dumps(payload, ensure_ascii=True, indent=2))
         return 0 if summary["can_run"] else 1
 
     _enable_ansi()
