@@ -289,6 +289,11 @@ def setup_logger(log_queue):
 
     logger = logging.getLogger("quick_gui")
     logger.setLevel(logging.DEBUG)
+    for h in logger.handlers:      # 先关旧句柄，否则重复调用会泄漏文件句柄
+        try:
+            h.close()
+        except Exception:
+            pass
     logger.handlers.clear()
 
     fmt_file = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s",
