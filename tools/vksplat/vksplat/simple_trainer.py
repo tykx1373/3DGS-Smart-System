@@ -58,6 +58,8 @@ class TrainerConfig:
     output_ply: str = "splat.ply"
     train_steps: int = 15000
     save_train_renders: bool = False
+    # 训练结束后是否执行 PSNR/SSIM/LPIPS 评测；CPU-only torch 下评测较慢，可关闭
+    run_eval: bool = True
 
     # dataset
     dataset_dir: str = "D:\\Desktop\\3DGS\\tools for 3DGS\\south-building\\test_ws"
@@ -595,7 +597,8 @@ def train_main(config: TrainerConfig, resume_output_dir: str = None):
     config.output_ply = os.path.join(config.output_dir, config.output_ply)
 
     train(config, resume_output_dir=resume_output_dir)
-    eval(config)
+    if config.run_eval:
+        eval(config)
 
 
 def benchmark_mipnerf360():

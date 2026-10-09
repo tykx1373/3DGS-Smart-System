@@ -384,12 +384,52 @@ def check_disk(min_free_gb=5.0):
     return CheckResult("磁盘空间", OK, detail)
 
 
+def check_tdr_delay(devices=None):
+    """Windows TDR：GPU 单个命令挂起超过 TdrDelay 秒会被驱动重置（默认 2 秒）。
+    核显跑 Vulkan 长 kernel 时尤其容易触发，表现为训练崩溃 / 设备丢失。"""
+    if sys.platform != "win32":
+        return CheckResult("TdrDelay", OK, "非 Windows，不适用")
+    if devices is None:
+        devices, _ = enumerate_vulkan_devices()
+    best = pick_device(devices)
+    integrated = is_integrated(best.get("name", "")) if best else True
+
+    value = None
+    try:
+        import winreg
+        sub_key = r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub_key) as k:
+            try:
+                raw, _typ = winreg.QueryValueEx(k, "TdrDelay")
+                value = int(raw)
+            except FileNotFoundError:
+                value = None  # 未设置：系统按默认 2 秒处理
+    except Exception:
+        value = None  # 读不到也不阻断自检，按默认对待
+
+    seconds = value if value is not None else 2
+    detail = f"TdrDelay = {seconds} 秒" if value is not None else "TdrDelay 未设置（默认 2 秒）"
+    fix_hint = (
+        "核显长训练容易触发显卡重置。修复：注册表定位到 "
+        r"HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers，"
+        "新建/修改 DWORD（32 位）值 TdrDelay，基数选十进制填 60，重启后生效。")
+    if integrated:
+        if seconds < 10:
+            return CheckResult("TdrDelay", WARN, detail, fix_hint)
+        return CheckResult("TdrDelay", OK, detail)
+    # 独显：默认值一般够用，不制造噪声阻断自检的"全部通过"
+    if seconds >= 10:
+        return CheckResult("TdrDelay", OK, detail)
+    return CheckResult("TdrDelay", OK, detail + "（独显通常够用）")
+
+
 def run_all(colmap_path=None, vkgs_exe=None):
     return [
         check_python(),
         check_vksplat_module(),
         check_dependencies(),
         check_vulkan(),
+        check_tdr_delay(),
         check_cuda(),
         check_colmap(colmap_path),
         check_vkgs(vkgs_exe),

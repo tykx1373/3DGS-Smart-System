@@ -114,6 +114,8 @@ RES_DIR_MAP = {
     "原分辨率（images）": "images",
 }
 RES_DEFAULT_BY_QUALITY = {"快速": "images_4", "标准": "images_2", "高质量": "images"}
+# 高级选项窗口里所有“标签 + 控件”行统一的标签列宽，保证各分区纵向对齐
+ADV_LABEL_W = 120
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 
 # 质量档位 -> (训练步数, 说明)。档位只给默认值，步数/分辨率都能在高级选项里覆盖。
@@ -140,34 +142,68 @@ _TQDM_RE = re.compile(
 # 各控件的悬浮说明。以控件文字为键；输入框/下拉框这类没有自身文字的控件，
 # 用同一行里紧邻的标签文字补位（见 _install_tooltips）。
 TIP_TEXTS = {
-    # 原则：常驻在界面上的提示（蓝字/灰字行）说过的，这里不再重复，只补细节。
-    "照片文件夹：": "支持 jpg / jpeg / png / bmp / tif / tiff 六种格式，文件夹里可以只有照片。",
-    "质量档位：": "决定训练步数、高斯点数上限和默认分辨率。这三项都能在高级选项里单独调整。",
-    "开始生成 3D 模型": "依次执行：COLMAP 稀疏重建 → VkSplat 训练 → 打开 VKGS 查看器。",
-    "停止": "安全停止：写入 STOP 标记，让训练在当前步收尾并存档，下次可从存档继续。",
-    "查看 3D 模型": "用 VKGS 打开工作区里的 PLY 模型（可同时开多个窗口对比）。",
-    "环境自检": "检查 Python / vksplat 模块 / 依赖 / Vulkan 设备 / COLMAP / VKGS / 磁盘空间，"
-                "并给出“能不能跑”和预计耗时。",
-    "运行日志": "切换独立日志窗口。完整日志同时写入 logs/年月日.log。",
-    "导出诊断": "把最近日志、环境自检结果和配置打成一个 zip（自动隐去用户名路径），"
-                "出问题时把这个 zip 发给开发者即可，不用手动贴日志。",
-    "COLMAP:": "COLMAP 可执行文件位置（colmap.exe 或 COLMAP.bat）。含中文的路径也可以。",
-    "VkSplat Python:": "运行 VkSplat 训练用的 Python 解释器，通常就是 env/vksplat/python.exe。",
-    "VKGS 查看器:": "vk_gaussian_splatting.exe，用来实时查看训练出来的模型。",
-    "工作区文件夹:": "每个数据集对应一个工作区，里面放 images / sparse / database.db / checkpoint。",
-    "训练步数:": "迭代次数，越多细节越好、耗时越长。"
-                 "注意：若工作区里已存在更靠后的存档（checkpoint），把步数改小不会产生新的训练。",
-    "MCMC 优化": "MCMC 稠密化策略：高斯点数增长更快、质量更好。默认开启。",
-    "图片缓存:": "gpu 更快但占显存；显存紧张或是核显，建议 cpu。",
-    "图像分辨率:": "训练与评测使用的图像尺寸。跟随质量档位＝快速 1/4、标准 1/2、高质量原图。"
-                   "COLMAP 始终用原图，重建质量不受影响。",
+    # 原则：界面常驻提示只给一句话；这里给具体数字、影响范围和什么时候该动它。
+    "照片文件夹：": "支持 jpg / jpeg / png / bmp / tif / tiff。文件夹里只放本次拍摄的照片，"
+                  "不要混入截图或重复照片；照片数量建议 30~200 张。",
+    "快速": "5000 步 · 1/4 分辨率 · 约 2~3 分钟 · 高斯点上限 20 万。"
+            "画面会发糊，只适合先确认重建轮廓和拍摄是否成功。",
+    "标准": "15000 步 · 1/2 分辨率 · 约 8~10 分钟 · 高斯点上限 40 万。"
+            "质量与速度平衡，日常使用推荐这一档。",
+    "高质量": "30000 步 · 原分辨率 · 约 20 分钟以上 · 高斯点上限 80 万。"
+              "细节最好；核显或显存紧张时会明显变慢，甚至可能失败。",
+    "质量档位：": "档位同时决定训练步数、高斯点上限和默认分辨率。"
+                  "这三项之后都能在「高级选项」里单独覆盖，不被档位锁死。",
+    "开始生成 3D 模型": "一键执行三步：① COLMAP 推算每张照片的拍摄位置（约 1~5 分钟）；"
+                      "② VkSplat 训练模型（按档位约 3~20 分钟以上）；③ 自动打开 VKGS 查看器。"
+                      "中途可随时「停止」，下次从存档继续。",
+    "停止": "安全停止：在工作区写入 STOP 标记，训练会在当前步正常收尾并保存存档，"
+            "不是强杀进程。再次开始时自动从存档继续，不会重头训练。",
+    "查看 3D 模型": "用 VKGS 打开工作区里最新的 PLY 模型，可同时开多个窗口对比。"
+                   "还没有生成模型时点击无效。",
+    "环境自检": "检查 Python 版本、vksplat 模块、依赖包、Vulkan 设备与显存、TdrDelay、"
+                "COLMAP、VKGS、磁盘空间，给出“能不能跑”和预计耗时；核显会额外提示显卡超时设置。",
+    "运行日志": "打开/关闭独立日志窗口，显示本次运行的完整输出。"
+               "同样的内容也会写入 logs/ 目录下当天的日志文件。",
+    "导出诊断": "把最近日志、环境自检结果和配置打成一个 zip（自动隐去用户名等路径信息）。"
+                "出问题时把这个 zip 发给开发者即可，不用手动复制日志。",
+    "COLMAP:": "COLMAP 启动文件（COLMAP.bat 或 colmap.exe），含中文/空格的路径也可以。"
+               "程序会自动识别并使用 CUDA 或 noCUDA 版本。",
+    "VkSplat Python:": "运行 VkSplat 训练的 Python 解释器，默认是 env/vksplat/python.exe，"
+                      "里面已装好 vksplat / torch / torchvision 等依赖。换成别的环境需自行装齐。",
+    "VKGS 查看器:": "vk_gaussian_splatting.exe，训练结束后用来旋转、缩放查看模型。"
+                   "这个文件缺失不影响训练，只影响最后一步查看。",
+    "工作区文件夹:": "每个数据集对应一个工作区，里面放 images 软链、sparse 位姿、"
+                   "database.db、checkpoint 存档和训练产物。留空时自动在 workspaces/ 下按照片文件夹名生成。",
+    "训练步数:": "训练迭代次数：5000 步看轮廓，15000 步日常使用，30000 步精修细节。"
+                 "注意：若工作区里已有更靠后的 checkpoint，把步数改小不会产生新的训练，"
+                 "需要先删掉 checkpoint 文件。",
+    "MCMC 优化": "高斯点的增删策略。勾选（默认）：用 MCMC 统计采样自动增删点，"
+                 "点数增长快、多数场景质量更好；取消：改用传统规则致密化，"
+                 "照片很少（约 30 张以下）或小场景训练失败时更稳。",
+    "图片缓存:": "训练图像放在哪里。gpu：读取快但占显存；cpu：不占显存，"
+                 "核显或显存不足时选它。",
+    "图像分辨率:": "训练和评测使用的图像尺寸：原图 / 1/2 / 1/4，越小越快但越糊。"
+                   "跟随质量档位＝快速 1/4、标准 1/2、高质量原图。"
+                   "COLMAP 始终使用原图，定位精度不受影响。",
+    "训练后质量评估（PSNR/SSIM/LPIPS）":
+        "训完后留出几张模型没见过的照片“考试”并打分：PSNR 是像素误差（越高越好，"
+        ">25 不错，<18 通常说明照片或训练有问题）；SSIM 衡量结构相似度；"
+        "LPIPS 最贴近人眼观感。CPU 版 PyTorch 大约需要几十秒；取消勾选则跳过，"
+        "模型文件照常生成。",
     "允许联网下载 LPIPS 权重（约 760 MB，国内可能很慢）":
-        "不勾：权重未缓存时跳过 LPIPS，只输出 PSNR / SSIM，不会卡住。"
-        "勾上：会先联网下载权重再计算 LPIPS。",
-    "最大图片尺寸:": "COLMAP 特征提取时把图片长边缩到该值以内。越大越精确也越慢（默认 1600）。",
-    "只用 COLMAP（空间定位）": "只跑稀疏重建（生成 sparse/0），不训练。",
-    "只用训练（生成模型）": "复用已有的 sparse/0，只跑训练，不会重跑 COLMAP。",
-    "保存路径配置": "把上面的工具路径与工作区写入 gui/quick_gui_config.json，下次启动自动读取。",
+        "LPIPS 需要约 760 MB 预训练权重。不勾：本地没有权重时自动跳过 LPIPS，"
+        "只输出 PSNR / SSIM，不会卡住；勾上：先联网下载权重再计算 LPIPS。",
+    "Mask 文件夹:": "放黑白遮罩图的文件夹。遮罩文件名按 COLMAP 约定与照片同名"
+                   "（照片 IMG_001.jpg 对应遮罩 IMG_001.jpg.png）；涂黑的区域训练时忽略，"
+                   "可排除行人、车辆、拍摄者影子等移动物体。留空表示不使用。",
+    "最大图片尺寸:": "COLMAP 提取特征时，把照片长边限制在该值以内（默认 1600）。"
+                   "越大定位越精确，但更慢、更吃内存；照片本身小于该值则不受影响。",
+    "只用 COLMAP（空间定位）": "只跑特征提取、匹配和稀疏重建（生成 sparse/0），不训练。"
+                              "适合先验证照片能不能正常定位、注册率够不够。",
+    "只用训练（生成模型）": "复用已有的 sparse/0 只跑训练，不重跑 COLMAP。"
+                          "调参数重新训练时用它，省去重复定位的时间。",
+    "保存路径配置": "把上面的工具路径与工作区写入 quick_gui_config.json，下次启动自动读取。"
+                   "其实多数选项已经自动保存，这个按钮用于手动确认立即生效。",
 }
 
 
@@ -385,7 +421,8 @@ class QuickSplatApp:
     def __init__(self, root):
         self.root = root
         root.title("3DGS 快速管线 - COLMAP + VkSplat(Vulkan) + VKGS")
-        root.geometry("960x780")
+        # 内容实际只需约 520 高；780 会在底部留一大片空白
+        root.geometry("960x580")
 
         self.cfg = load_config()
         self.log_queue = queue.Queue()
@@ -504,7 +541,8 @@ class QuickSplatApp:
         self.adv_window.geometry("860x700")
         self.adv_window.withdraw()
         self.adv_window.protocol("WM_DELETE_WINDOW", self._hide_advanced)
-        self.advanced_frame = ctk.CTkFrame(self.adv_window, fg_color="transparent")
+        # 可滚动：高 DPI 缩放 / 内容增高时不会被窗口底边裁掉
+        self.advanced_frame = ctk.CTkScrollableFrame(self.adv_window, fg_color="transparent")
         self.advanced_frame.pack(fill="both", expand=True, padx=14, pady=14)
         self._build_advanced_panel()
 
@@ -735,7 +773,7 @@ class QuickSplatApp:
         for label, var, ft in rows:
             r = ctk.CTkFrame(af, fg_color="transparent")
             r.pack(fill="x", pady=3)
-            ctk.CTkLabel(r, text=label, width=130, anchor="w").pack(side="left")
+            ctk.CTkLabel(r, text=label, width=ADV_LABEL_W, anchor="w").pack(side="left")
             ctk.CTkEntry(r, textvariable=var).pack(side="left", fill="x", expand=True, padx=6)
             ctk.CTkButton(r, text="浏览", width=70,
                           command=lambda v=var, f=ft: _browse_file(v, f)).pack(side="left")
@@ -743,7 +781,7 @@ class QuickSplatApp:
         ctk.CTkLabel(af, text="项目工作区", font=FONT_STEP).pack(anchor="w", pady=(12, 4))
         rw = ctk.CTkFrame(af, fg_color="transparent")
         rw.pack(fill="x", pady=3)
-        ctk.CTkLabel(rw, text="工作区文件夹:", width=130, anchor="w").pack(side="left")
+        ctk.CTkLabel(rw, text="工作区文件夹:", width=ADV_LABEL_W, anchor="w").pack(side="left")
         self.ws_var = tk.StringVar()
         ctk.CTkEntry(rw, textvariable=self.ws_var).pack(side="left", fill="x", expand=True, padx=6)
         ctk.CTkButton(rw, text="浏览", width=70, command=self._browse_ws).pack(side="left")
@@ -756,22 +794,22 @@ class QuickSplatApp:
         # 分两行放：全部挤在一行会超出窗口宽度被裁掉
         # （整行需求宽度约 1100px，而高级选项窗口没这么宽）
         r1 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
-        r1.pack(fill="x")
-        ctk.CTkLabel(r1, text="训练步数:", width=90, anchor="w").pack(side="left")
+        r1.pack(fill="x", pady=3)
+        ctk.CTkLabel(r1, text="训练步数:", width=ADV_LABEL_W, anchor="w").pack(side="left")
         self.vs_steps_var = tk.IntVar(value=_cfg_int(self.cfg, "train_steps", 15000, 100, 10 ** 7))
         ctk.CTkEntry(r1, textvariable=self.vs_steps_var, width=100).pack(side="left", padx=4)
         self.vs_steps_var.trace_add("write", lambda *_: self._save_options())
-        self.vs_mcmc_var = tk.BooleanVar(value=True)
+        self.vs_mcmc_var = tk.BooleanVar(value=bool(self.cfg.get("vs_mcmc", True)))
         ctk.CTkCheckBox(r1, text="MCMC 优化",
                         variable=self.vs_mcmc_var).pack(side="left", padx=12)
 
         r2 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
-        r2.pack(fill="x", pady=(4, 0))
-        ctk.CTkLabel(r2, text="图片缓存:", width=90, anchor="w").pack(side="left")
+        r2.pack(fill="x", pady=3)
+        ctk.CTkLabel(r2, text="图片缓存:", width=ADV_LABEL_W, anchor="w").pack(side="left")
         self.vs_cache_var = tk.StringVar(value="cpu")
         ctk.CTkComboBox(r2, variable=self.vs_cache_var,
                         values=["cpu", "gpu"], width=80, state="readonly").pack(side="left", padx=4)
-        ctk.CTkLabel(r2, text="图像分辨率:", width=90, anchor="w").pack(side="left", padx=(12, 0))
+        ctk.CTkLabel(r2, text="图像分辨率:", width=ADV_LABEL_W, anchor="w").pack(side="left", padx=(12, 0))
         saved_res = self.cfg.get("res_choice", RES_AUTO)
         if saved_res not in list(RES_DIR_MAP) + [RES_AUTO]:
             saved_res = RES_AUTO
@@ -781,19 +819,39 @@ class QuickSplatApp:
                         width=140, state="readonly").pack(side="left", padx=4)
 
         r3 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
-        r3.pack(fill="x", pady=(4, 0))
+        r3.pack(fill="x", pady=3)
+        self.run_eval_var = tk.BooleanVar(value=bool(self.cfg.get("run_eval", True)))
+        ctk.CTkCheckBox(r3, text="训练后质量评估（PSNR/SSIM/LPIPS）",
+                        variable=self.run_eval_var).pack(side="left")
+
+        r4 = ctk.CTkFrame(self.vs_frame, fg_color="transparent")
+        r4.pack(fill="x", pady=3)
         self.lpips_dl_var = tk.BooleanVar(value=bool(self.cfg.get("lpips_download", False)))
-        ctk.CTkCheckBox(r3, text="允许联网下载 LPIPS 权重（约 760 MB，国内可能很慢）",
+        ctk.CTkCheckBox(r4, text="允许联网下载 LPIPS 权重（约 760 MB，国内可能很慢）",
                         variable=self.lpips_dl_var).pack(side="left")
 
-        # 这两项改了就写回配置（在设初值之后挂 trace，避免启动时白写一次）
+        # 这些项改了就写回配置（在设初值之后挂 trace，避免启动时白写一次）
+        self.vs_mcmc_var.trace_add("write", lambda *_: self._save_options())
+        self.run_eval_var.trace_add("write", lambda *_: self._save_options())
         self.res_var.trace_add("write", lambda *_: self._save_options())
         self.lpips_dl_var.trace_add("write", lambda *_: self._save_options())
+
+        ctk.CTkLabel(af, text="Mask（可选）", font=FONT_STEP).pack(anchor="w", pady=(12, 4))
+        rm = ctk.CTkFrame(af, fg_color="transparent")
+        rm.pack(fill="x", pady=3)
+        ctk.CTkLabel(rm, text="Mask 文件夹:", width=ADV_LABEL_W, anchor="w").pack(side="left")
+        self.mask_var = tk.StringVar(value=str(self.cfg.get("mask_dir", "") or ""))
+        ctk.CTkEntry(rm, textvariable=self.mask_var).pack(side="left", fill="x", expand=True, padx=6)
+        ctk.CTkButton(rm, text="浏览", width=70,
+                      command=lambda: self._browse_dir(self.mask_var)).pack(side="left")
+        ctk.CTkLabel(af, text="遮罩图须与照片同名（如 IMG_001.jpg.png），训练时忽略被遮区域；留空不使用",
+                     font=FONT_HINT, text_color="#888").pack(anchor="w")
+        self.mask_var.trace_add("write", lambda *_: self._save_options())
 
         ctk.CTkLabel(af, text="COLMAP 选项", font=FONT_STEP).pack(anchor="w", pady=(12, 4))
         rc = ctk.CTkFrame(af, fg_color="transparent")
         rc.pack(fill="x", pady=3)
-        ctk.CTkLabel(rc, text="最大图片尺寸:", width=130, anchor="w").pack(side="left")
+        ctk.CTkLabel(rc, text="最大图片尺寸:", width=ADV_LABEL_W, anchor="w").pack(side="left")
         self.max_img_var = tk.IntVar(value=_cfg_int(self.cfg, "max_image_size", 1600, 256, 20000))
         ctk.CTkEntry(rc, textvariable=self.max_img_var, width=100).pack(side="left", padx=4)
         self.max_img_var.trace_add("write", lambda *_: self._save_options())
@@ -1041,6 +1099,11 @@ class QuickSplatApp:
         if p:
             self.ws_var.set(relativize_path(p))
 
+    def _browse_dir(self, var):
+        p = filedialog.askdirectory()
+        if p:
+            var.set(relativize_path(p))
+
     def _save_paths(self):
         self.cfg["colmap_path"] = self.colmap_var.get()
         self.cfg["vkgs_exe"] = self.vkgs_var.get()
@@ -1055,6 +1118,9 @@ class QuickSplatApp:
         self.cfg["quality"] = self.quality_var.get()
         self.cfg["res_choice"] = self.res_var.get()
         self.cfg["lpips_download"] = bool(self.lpips_dl_var.get())
+        self.cfg["vs_mcmc"] = bool(self.vs_mcmc_var.get())
+        self.cfg["run_eval"] = bool(self.run_eval_var.get())
+        self.cfg["mask_dir"] = self.mask_var.get().strip()
         for key, var in (("train_steps", self.vs_steps_var),
                          ("max_image_size", self.max_img_var)):
             try:
@@ -1380,8 +1446,13 @@ class QuickSplatApp:
     def _build_vksplat_script(self, dataset_dir, image_dir, sparse_dir,
                               output_dir, train_steps, cache_device,
                               device_id=-1, cap_max=1000000, resume_output_dir=None,
-                              allow_lpips_download=False):
+                              allow_lpips_download=False,
+                              use_mcmc=True, run_eval=True, mask_dir=None):
         resume_line = f", resume_output_dir=r\"{resume_output_dir}\"" if resume_output_dir else ""
+        # mask_dir 为 None 时传 None（simple_trainer 据此留空）；否则用正斜杠路径，
+        # 绝对路径经 join_dir 会原样保留，避免与 dataset_dir 错误拼接。
+        mask_repr = "None" if mask_dir is None else \
+            'r"' + str(mask_dir).replace("\\", "/") + '"'
         # 评测的 LPIPS 需要约 760 MB 预训练权重。默认只在已缓存时才计算（见
         # simple_trainer.eval）；勾选「允许联网下载」后把开关注入训练脚本的环境变量
         # —— 训练是独立子进程，必须写进脚本才带得过去。
@@ -1402,7 +1473,7 @@ simple_trainer.TRAIN_DEVICE = {device_id}
 from simple_trainer import MCMCTrainerConfig, TrainerConfig, train_main
 
 if __name__ == "__main__":
-    config = MCMCTrainerConfig(
+    config = (MCMCTrainerConfig if {use_mcmc} else TrainerConfig)(
         output_dir=r"{output_dir}",
         output_ply="splat.ply",
         train_steps={train_steps},
@@ -1413,6 +1484,8 @@ if __name__ == "__main__":
         sparse_dir=r"{sparse_dir}",
         image_cache_device="{cache_device}",
         cap_max={cap_max},
+        mask_dir={mask_repr},
+        run_eval={run_eval},
     )
     train_main(config{resume_line})
 """
@@ -1675,6 +1748,16 @@ if __name__ == "__main__":
                 if os.path.isdir(os.path.join(output_dir, d)):
                     existing_dirs.add(d)
 
+        use_mcmc = bool(self.vs_mcmc_var.get())
+        run_eval = bool(self.run_eval_var.get())
+        mask_picked = self.mask_var.get().strip()
+        mask_picked = resolve_path(mask_picked) if mask_picked else None
+        self._log(f"[INFO] 优化策略: {'MCMC' if use_mcmc else '默认致密化（小场景兜底）'}")
+        if mask_picked:
+            self._log(f"[INFO] Mask 文件夹: {mask_picked}")
+        if not run_eval:
+            self._log("[INFO] 已关闭训练后质量评估，本次不会生成 eval.json。")
+
         script = self._build_vksplat_script(
             dataset_dir=dataset_dir, image_dir=image_dir,
             sparse_dir=sparse_dir, output_dir=output_dir,
@@ -1682,6 +1765,7 @@ if __name__ == "__main__":
             device_id=device_id, cap_max=cap_max,
             resume_output_dir=ws_dir.replace("\\", "/"),
             allow_lpips_download=self.lpips_dl_var.get(),
+            use_mcmc=use_mcmc, run_eval=run_eval, mask_dir=mask_picked,
         )
 
         tmp_path = os.path.join(tempfile.gettempdir(), "vksplat_train_generated.py")
