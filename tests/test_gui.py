@@ -185,7 +185,8 @@ class TestSaveOptions(unittest.TestCase):
     def tearDown(self):
         q.CONFIG_PATH = self._orig
 
-    def _app(self, steps=9000, maximg=1600, steps_raises=False):
+    def _app(self, steps=9000, maximg=1600, steps_raises=False,
+             mcmc=True, run_eval=True, mask=""):
         app = _bare_app()
         app.cfg = {}
         app.quality_var = _FakeVar("快速")
@@ -193,6 +194,10 @@ class TestSaveOptions(unittest.TestCase):
         app.lpips_dl_var = _FakeVar(True)
         app.vs_steps_var = _FakeVar(None, raises=True) if steps_raises else _FakeVar(steps)
         app.max_img_var = _FakeVar(maximg)
+        # 高级面板里的选项：真实 GUI 中由 _build_advanced_panel 创建
+        app.vs_mcmc_var = _FakeVar(mcmc)
+        app.run_eval_var = _FakeVar(run_eval)
+        app.mask_var = _FakeVar(mask)
         return app
 
     def _saved(self):
@@ -207,6 +212,19 @@ class TestSaveOptions(unittest.TestCase):
         self.assertTrue(saved["lpips_download"])
         self.assertEqual(saved["train_steps"], 9000)
         self.assertEqual(saved["max_image_size"], 1600)
+        self.assertTrue(saved["vs_mcmc"])
+        self.assertTrue(saved["run_eval"])
+        self.assertEqual(saved["mask_dir"], "")
+
+    def test_writes_advanced_toggles_and_mask_path(self):
+        """取消 MCMC/评估、填入 Mask 路径时，非默认值也必须原样落盘。"""
+        self._app(mcmc=False, run_eval=False,
+                  mask=r"D:\tmp\masks  ")._save_options()
+        saved = self._saved()
+        self.assertFalse(saved["vs_mcmc"])
+        self.assertFalse(saved["run_eval"])
+        # 末尾空白要 strip 掉，避免把用户误输入的空格带进训练脚本路径
+        self.assertEqual(saved["mask_dir"], r"D:\tmp\masks")
 
     def test_config_is_written_as_ascii(self):
         """ensure_ascii=True：中文路径在部分环境下会被读错。"""
