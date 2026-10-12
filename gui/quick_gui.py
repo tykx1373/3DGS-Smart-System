@@ -208,11 +208,13 @@ TIP_TEXTS = {
 
 
 class _Tip:
-    """悬浮说明：鼠标停在控件旁的「?」上时，在其右侧弹出小窗；移开、点击、
-    或主窗口被移动/缩放都会关闭。
+    """悬浮说明：鼠标停在控件上 250ms 后在其右侧弹出小窗；移开、点击、
+    或窗口被移动/缩放都会关闭。
 
-    只把进出事件绑在「?」这个小标签上（叶子控件，事件可靠），再配合窗口级的
-    鼠标移动监听兜底，避免复合控件 NotifyInferior 造成的“移开不消失”。
+    说明直接挂在控件本体（按钮/输入框/复选框/单选钮等 CTk 复合控件）。
+    CTk 控件内部还有 label/canvas 等子部件，指针在它们之间移动时会收到
+    detail=NotifyInferior(3) 的 Leave/Enter —— 这类事件不算离开控件，
+    否则提示会在控件内部一边移动一边闪。另有窗口级 <Motion> 兜底。
     """
 
     def __init__(self, app, widget, text, delay=250):
@@ -227,7 +229,7 @@ class _Tip:
         widget.bind("<ButtonPress>", self._hide, add="+")
 
     def contains_pointer(self):
-        """指针是否还在「?」范围内。"""
+        """指针是否还在控件范围内。"""
         try:
             px, py = self.widget.winfo_pointerxy()
             x, y = self.widget.winfo_rootx(), self.widget.winfo_rooty()
@@ -237,7 +239,14 @@ class _Tip:
         except Exception:
             return False
 
-    def _schedule(self, _e=None):
+    @staticmethod
+    def _is_inferior(e):
+        # NotifyInferior = 3：指针只是移动到该控件的子部件上，不算离开/重新进入
+        return getattr(e, "detail", None) == 3
+
+    def _schedule(self, e=None):
+        if self._is_inferior(e):
+            return
         self._cancel()
         try:
             self._after = self.widget.after(self.delay, self._show)
@@ -261,7 +270,7 @@ class _Tip:
             win.update_idletasks()
             w, h = win.winfo_reqwidth(), win.winfo_reqheight()
             sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-            # 放在「?」右侧（不挡鼠标）；右边放不下就改到左侧
+            # 放在控件右侧（不挡鼠标）；右边放不下就改到左侧
             x = self.widget.winfo_rootx() + self.widget.winfo_width() + 8
             if x + w > sw - 8:
                 x = self.widget.winfo_rootx() - w - 8
@@ -273,7 +282,9 @@ class _Tip:
         except Exception:
             self._win = None
 
-    def _hide(self, _e=None):
+    def _hide(self, e=None):
+        if self._is_inferior(e):
+            return  # 只是移到内部子部件上，提示保持显示
         self._cancel()
         if self._win is not None:
             try:
@@ -562,7 +573,7 @@ class QuickSplatApp:
         # ---- 底部工具栏：次要操作并成一行，不再各自独占一整行 ----
         footer = ctk.CTkFrame(self.root, fg_color="transparent")
         footer.pack(fill="x", padx=16, pady=(4, 12))
-        self.adv_toggle_var = tk.StringVar(value="高级选项 ▼")
+        self.adv_toggle_var = tk.StringVar(value="高级选项")
         self.adv_btn = ctk.CTkButton(footer, textvariable=self.adv_toggle_var,
                                      command=self._toggle_advanced, height=32,
                                      fg_color="transparent", border_width=1,
@@ -597,34 +608,8 @@ class QuickSplatApp:
         except Exception:
             pass
 
-    def _add_help_mark(self, target, text):
-        """在控件旁插一个「?」，说明挂在「?」上——「?」是叶子小控件，进出事件可靠。"""
-        if not text:
-            return
-        # 同一段说明只挂一个：一行里的标签、输入框、浏览按钮会各自匹配到同一段文字，
-        # 不去重的话一行里会冒出两三个内容完全一样的「?」。
-        if not hasattr(self, "_tipped_texts"):
-            self._tipped_texts = set()
-        if text in self._tipped_texts:
-            return
-        self._tipped_texts.add(text)
-        # 底部工具栏的按钮本身够宽够好点，说明直接挂在按钮上，
-        # 不必再插一个「?」占位置。
-        if target in (getattr(self, "log_btn", None), getattr(self, "adv_btn", None),
-                      getattr(self, "diag_btn", None)):
-            self._add_tip(target, text)
-            return
-        # 注意：不要用 pack_info() 判断 fill —— CTkEntry 返回的是内部 Entry 的信息
-        try:
-            q = ctk.CTkLabel(target.master, text="?", width=12, font=FONT_HINT,
-                             text_color=("#3b82f6", "#60a5fa"))
-            q.pack(side="left", padx=(2, 0), after=target)
-            self._add_tip(q, text)
-        except Exception:
-            self._add_tip(target, text)
-
     def _tip_motion(self, _e=None):
-        """窗口级兜底：指针离开「?」就关掉提示（复合控件的 Leave 事件不可靠）。"""
+        """窗口级兜底：指针离开控件矩形就关掉提示（复合控件的 Leave 事件不可靠）。"""
         t = getattr(self, "_active_tip", None)
         if t is not None and not t.contains_pointer():
             t._hide()
@@ -646,8 +631,23 @@ class QuickSplatApp:
                 pass
 
     def _install_tooltips(self):
-        """按控件文字找到该讲说明的控件，并在它旁边插一个「?」。
-        输入框/下拉框没有自身文字，用同一行里紧邻的标签补位。"""
+        """把说明直接挂到控件本体：鼠标悬停按钮/输入框/复选框/单选钮即弹出。
+
+        同一段说明可能同时匹配一行里的标签、输入框和浏览按钮，按
+        “可点击控件 > 输入框 > 标签”的优先级只挂一次。
+        输入框/下拉框没有自身文字，用同一行里紧邻的标签补位。
+        """
+        PRIO_CLICK, PRIO_ENTRY, PRIO_LABEL = 3, 2, 1
+        CLICK_CLS = ("CTkCheckBox", "CTkRadioButton", "CTkButton")
+        ENTRY_CLS = ("Entry", "TEntry", "CTkEntry", "CTkComboBox")
+
+        chosen = {}  # tip 正文 -> (控件, 优先级)
+
+        def consider(widget, text, prio):
+            cur = chosen.get(text)
+            if cur is None or prio > cur[1]:
+                chosen[text] = (widget, prio)
+
         def walk(container, last_label):
             for child in container.winfo_children():
                 txt = None
@@ -661,14 +661,13 @@ class QuickSplatApp:
 
                 handled = False
                 if txt and txt in TIP_TEXTS:
-                    self._add_help_mark(child, TIP_TEXTS[txt])
+                    prio = PRIO_CLICK if cls in CLICK_CLS else PRIO_LABEL
+                    consider(child, TIP_TEXTS[txt], prio)
                     handled = True
-                elif cls in ("Entry", "TEntry", "CTkEntry", "CTkComboBox") and last_label in TIP_TEXTS:
-                    self._add_help_mark(child, TIP_TEXTS[last_label])
+                elif cls in ENTRY_CLS and last_label in TIP_TEXTS:
+                    consider(child, TIP_TEXTS[last_label], PRIO_ENTRY)
                     handled = True
-                elif cls == "CTkButton" and txt in ("浏览", "浏览…") and last_label:
-                    self._add_help_mark(child, TIP_TEXTS.get(last_label))
-                    handled = True
+                # 「浏览」按钮与同行输入框共用同一段说明，不再重复挂
 
                 if txt and txt.rstrip().endswith((":", "：")):
                     last_label = txt
@@ -676,6 +675,9 @@ class QuickSplatApp:
                     walk(child, last_label)
 
         walk(self.root, None)
+        for text, (widget, _prio) in chosen.items():
+            self._add_tip(widget, text)
+        # 高级选项按钮的文字不在 TIP_TEXTS（随展开状态变化），单独挂
         self._add_tip(self.adv_btn, "路径配置、训练参数、COLMAP 选项与分步操作。")
         self._watch_tips()
 
@@ -871,14 +873,11 @@ class QuickSplatApp:
             self.adv_window.deiconify()
             self.adv_window.lift()
             self.adv_window.focus_force()
-            self.adv_toggle_var.set("高级选项 ▲")
         else:
             self.adv_window.withdraw()
-            self.adv_toggle_var.set("高级选项 ▼")
 
     def _hide_advanced(self):
         self.adv_window.withdraw()
-        self.adv_toggle_var.set("高级选项 ▼")
 
     # --------------------------------------------------- step / status ----
     def _set_step(self, n):
