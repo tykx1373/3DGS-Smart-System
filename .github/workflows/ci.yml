@@ -5,12 +5,24 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 同一分支连续 push 时取消上一次还在跑的 CI，省额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     # Windows-only project: the prebuilt .pyd files are win_amd64 and the
     # installers are .bat/.ps1. The Windows runner also ships tkinter with the
     # official Python build, so the GUI tests can actually run.
+    # cp310 / cp311 are the two ABIs covered by the prebuilt vksplat .pyd
+    # (see environment.yaml and syscheck.check_python).
+    name: checks (Python ${{ matrix.python-version }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
     steps:
       # Node 20 was removed from the runners on 2026-09-23, so node20 actions are
       # now force-run on Node 24 with a deprecation warning. Minimal node24 majors:
@@ -19,13 +31,15 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.10"        # keep in sync with environment.yaml
+          python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
         run: python -m pip install --upgrade pip customtkinter
 
       - name: Byte-compile Python sources
-        run: python -m compileall -q gui doctor.py tests
+        # tools/vksplat/vksplat is not imported by the unit tests (torch/vksplat
+        # are absent in CI), so compileall is the only syntax net for it.
+        run: python -m compileall -q gui tests doctor.py tools/vksplat/vksplat
 
       # PowerShell 5.1 on a user's machine reads a BOM-less .ps1 as ANSI, which
       # has already broken download_tools.ps1 twice. tests/test_repo_rules.py
@@ -55,7 +69,9 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP doctor.json
           python doctor.py --json > $out
           if ($LASTEXITCODE -ne 0) { Write-Host "doctor exited $LASTEXITCODE (expected on CI)" }
-          python -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); c=d['checks']; ok=(len(c)>=6 and all({'name','status','detail','hint'}<=set(x) and x['status'] in ('ok','warn','fail') for x in c) and isinstance(d['can_run'],bool)); print('doctor json:', len(c), 'checks, ok =', ok); sys.exit(0 if ok else 1)" $out
+          # len(c) >= 9 must stay in sync with syscheck.run_all; lowering it
+          # silently would let a deleted check go green.
+          python -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); c=d['checks']; ok=(len(c)>=9 and all({'name','status','detail','hint'}<=set(x) and x['status'] in ('ok','warn','fail') for x in c) and isinstance(d['can_run'],bool)); print('doctor json:', len(c), 'checks, ok =', ok); sys.exit(0 if ok else 1)" $out
 
       - name: Unit tests
         run: python -m unittest discover -s tests -v
