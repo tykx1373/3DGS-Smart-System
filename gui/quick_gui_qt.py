@@ -67,7 +67,7 @@ class _Signals(QObject):
     running = Signal(bool, bool)         # 是否运行中, 不确定进度条
     eval_ready = Signal(object)
     log = Signal(str, str)               # 文本, 级别(info/warn/fail/ok)
-    check_result = Signal(str)
+    diag_done = Signal(str, object)      # 目标路径, 异常或 None
 
 
 # ---------------------------------------------------------------- 小部件 ----
@@ -479,14 +479,19 @@ class LogPage(QWidget):
     COLORS = {"info": "#c8c8c8", "warn": "#f59e0b", "fail": "#ef4444",
               "ok": "#22c55e", "dbg": "#9ca3af"}
 
-    def __init__(self):
+    def __init__(self, win):
         super().__init__()
         self.setObjectName("logPage")
+        self.win = win
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 20, 28, 20)
         head = QHBoxLayout()
         head.addWidget(TitleLabel("运行日志"))
         head.addStretch(1)
+        diag = PushButton("导出诊断包")
+        diag.setToolTip("把最近日志、自检结果和配置打包（路径已隐去），发给开发者排查问题。")
+        diag.clicked.connect(win.export_diagnostics)
+        head.addWidget(diag)
         clear = PushButton("清空")
         clear.clicked.connect(lambda: self.view.clear())
         head.addWidget(clear)
@@ -544,6 +549,97 @@ class EvalDialog(QDialog):
         lay.addLayout(btns)
 
 
+# ================================================================== 自检弹窗 ====
+class _SyscheckSignals(QObject):
+    done = Signal(object)
+
+
+class SyscheckDialog(QDialog):
+    """环境自检：逐项展示检查结果（对应 Tk 版的自检窗口）。"""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self._sig = _SyscheckSignals()
+        self._sig.done.connect(self._render)
+        self.setWindowTitle("环境自检")
+        self.setMinimumSize(680, 560)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(8)
+        lay.addWidget(TitleLabel("环境自检"))
+        lay.addWidget(CaptionLabel("检查这台机器能不能跑（Vulkan 能力 / 依赖 / 工具 / 耗时预估）"))
+        self.view = TextEdit()
+        self.view.setReadOnly(True)
+        self.view.setFont(QFont("Consolas", 10))
+        lay.addWidget(self.view, 1)
+        self.conclusion = BodyLabel("正在检测…")
+        self.conclusion.setWordWrap(True)
+        lay.addWidget(self.conclusion)
+        btns = QHBoxLayout()
+        self.recheck = PushButton("重新检测")
+        self.recheck.clicked.connect(self.detect)
+        close = PushButton("关闭")
+        close.clicked.connect(self.accept)
+        btns.addWidget(self.recheck)
+        btns.addStretch(1)
+        btns.addWidget(close)
+        lay.addLayout(btns)
+        self.detect()
+
+    def detect(self):
+        self.recheck.setEnabled(False)
+        self.conclusion.setText("正在检测…")
+        self.view.setPlainText("正在检测，请稍候…")
+
+        def work():
+            summary = syscheck.summarize(
+                colmap_path=resolve_path(self.win.colmap_var.get().strip()),
+                vkgs_exe=resolve_path(self.win.vkgs_var.get().strip()),
+                quality=self.win.quality_var.get(),
+                steps=int(self.win.vs_steps_var.get()))
+            syscheck.record_check()
+            self._sig.done.emit(summary)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render(self, s):
+        import html
+        colors = {"ok": "#22c55e", "warn": "#f59e0b", "fail": "#ef4444"}
+        marks = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}
+        rows_html = []
+        for r in s["results"]:
+            c = colors.get(r.status, "#888")
+            line = (f'<span style="color:{c};font-weight:600">[{marks.get(r.status, "?")}]</span> '
+                    f'<b>{html.escape(r.name)}</b>: {html.escape(r.detail)}')
+            rows_html.append(line)
+            if r.hint:
+                rows_html.append(f'<span style="color:#f59e0b">    → {html.escape(r.hint)}</span>')
+        self.view.setHtml("<br>".join(rows_html))
+
+        if s["can_run"]:
+            dev = s["device"]
+            kind = "核显" if s["is_integrated"] else "独显"
+            txt = f"结论：你的机器可以跑。{dev['name']}（{kind}）"
+            if s["laptop"]:
+                txt += f"。笔记本：耗时估算已按 {syscheck.LAPTOP_PENALTY}x 保守放大"
+            est = s["est_total_sec"]
+            if est is not None:
+                note = "基于上次实测速度" if s["measured"] else "首次估算，跑过一次后会用实测修正"
+                txt += f"。预计耗时 {syscheck.format_duration(est)}（{note}）"
+            self.conclusion.setStyleSheet("color:#22c55e;")
+            self.conclusion.setText(txt)
+            if all(r.status == syscheck.OK for r in s["results"]):
+                # 全部通过：1.8 秒后自动关闭，不打断首次运行
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(1800, self.accept)
+        else:
+            blockers = s["blockers"] or ["无可用 Vulkan 设备"]
+            self.conclusion.setStyleSheet("color:#ef4444;")
+            self.conclusion.setText("结论：跑不动。原因：" + "、".join(blockers))
+        self.recheck.setEnabled(True)
+
+
 # ==================================================================== 主窗口 ====
 class MainWindow(FluentWindow, PipelineCore):
     def __init__(self):
@@ -561,7 +657,7 @@ class MainWindow(FluentWindow, PipelineCore):
         self.train_page = TrainPage(self)
         self.history_page = HistoryPage(self)
         self.settings_page = SettingsPage(self)
-        self.log_page = LogPage()
+        self.log_page = LogPage(self)
         icon = lambda name: getattr(FIF, name, FIF.HOME)
         self.addSubInterface(self.train_page, icon("HOME"), "训练")
         self.addSubInterface(self.history_page, icon("HISTORY"), "历史模型")
@@ -681,19 +777,45 @@ class MainWindow(FluentWindow, PipelineCore):
 
     def _log(self, text):
         """核心在工作线程调用：文件日志 + 信号刷新界面，并解析进度。"""
+        from pipeline_core import _PROGRESS_RE, _TQDM_RE
+        marks = _PROGRESS_RE.findall(text)
+        if marks:
+            try:
+                s, t, el, eta, n = marks[-1]
+                step, total, num = int(s), int(t), int(n)
+                elapsed, eta = float(el), float(eta)
+                pct = step / total if total else 0.0
+                detail = (f"进度 {pct*100:.0f}% · {step}/{total} 步 · "
+                          f"已用 {elapsed/60:.1f} 分钟")
+                if eta > 0:
+                    detail += f" · 剩余 {eta/60:.1f} 分钟"
+                detail += f" · {num} 个高斯"
+                self.sig.progress.emit(pct, detail)
+                # 约 30% 处记录一次累计平均 it/s，供下次耗时估算（每次运行仅一次）
+                if not self._ips_recorded and pct >= 0.3 and elapsed > 5:
+                    self._ips_recorded = True
+                    try:
+                        syscheck.record_measured_ips(self.quality_var.get(), step / elapsed)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # 进度行进文件日志，界面不刷屏
+            self.logger.info(text.strip())
+            return
+        if "%|" in text:
+            m = _TQDM_RE.search(text)
+            # Training 由上面的 PROGRESS 标记驱动，跳过以免文案互相覆盖
+            if m and m.group("label").strip() != "Training":
+                d = f"{m.group('label').strip()}：{m.group('n')}/{m.group('total')}"
+                if m.group("elapsed"):
+                    d += f" · 已用 {m.group('elapsed')}"
+                if m.group("eta") and m.group("eta") != "?":
+                    d += f" · 剩余 {m.group('eta')}"
+                self.sig.progress.emit(-1.0, d)
+            self.logger.info(text.strip())
+            return
         level = "info"
-        try:
-            marks = __import__("pipeline_core", fromlist=["_PROGRESS_RE"])._PROGRESS_RE.findall(text)
-            if marks:
-                s, t, _e1, _e2, n = marks[-1]
-                frac = int(s) / max(1, int(t))
-                self.sig.progress.emit(frac, f"{int(s)}/{int(t)} 步 · {n} 个高斯点")
-                return  # 进度帧只进文件
-            tq = __import__("pipeline_core", fromlist=["_TQDM_RE"])._TQDM_RE.search(text)
-            if tq:
-                self.sig.progress.emit(-1.0, f"{tq.group('label')}: {tq.group('n')}/{tq.group('total')}")
-        except Exception:
-            pass
         if text.startswith("[FAIL]"):
             level = "fail"
         elif text.startswith("[WARN]"):
@@ -712,7 +834,7 @@ class MainWindow(FluentWindow, PipelineCore):
         self.sig.running.connect(self._apply_running)
         self.sig.eval_ready.connect(self._show_eval)
         self.sig.log.connect(self.log_page.append_line)
-        self.sig.check_result.connect(self._show_check_result)
+        self.sig.diag_done.connect(self._diagnostics_done)
 
     def _on_progress(self, frac, detail):
         if frac >= 0:
@@ -723,16 +845,20 @@ class MainWindow(FluentWindow, PipelineCore):
             self.status_lab.setText(detail)
 
     def _apply_running(self, running, indeterminate):
-        self.run_btn.setEnabled(not running)
-        self.stop_btn.setEnabled(running)
         self.ind_bar.setVisible(running and indeterminate)
         self.det_bar.setVisible(running and not indeterminate)
         if running:
             self.det_bar.setValue(0)
-        # 运行中禁用参数，避免中途改设置
-        disabled_types = (LineEdit, SpinBox, RadioButton, CheckBox)
-        for w in self.train_page.findChildren(disabled_types):
-            w.setEnabled(not running)
+        # 运行中禁用参数（训练页 + 设置页），避免中途改设置。
+        # 先统一处理，再单独设置开始/停止按钮，避免被循环覆盖。
+        # PySide6 的 findChildren 一次只接受一个类型，需逐个调用。
+        disabled_types = (LineEdit, SpinBox, ComboBox, RadioButton, CheckBox, PushButton)
+        for page in (self.train_page, self.settings_page):
+            for typ in disabled_types:
+                for w in page.findChildren(typ):
+                    w.setEnabled(not running)
+        self.run_btn.setEnabled(not running)
+        self.stop_btn.setEnabled(running)
 
     # ------------------------------------------------ PipelineCore 宿主 ----
     def set_status(self, text):
@@ -836,33 +962,45 @@ class MainWindow(FluentWindow, PipelineCore):
                 self.run_viewer(p)
 
     def open_syscheck(self):
+        SyscheckDialog(self).exec()
+
+    def export_diagnostics(self):
+        """收集日志/自检/配置打成 zip（后台线程，避免卡住 UI）。"""
+        import diagnostics
+        dest = diagnostics.default_dest(PROJECT_ROOT)
+        self.set_status("正在收集诊断信息...")
+        self._log(f"[INFO] 正在导出诊断包: {dest}")
+
         def work():
-            summary = syscheck.summarize(
-                colmap_path=resolve_path(self.colmap_var.get().strip()),
-                vkgs_exe=resolve_path(self.vkgs_var.get().strip()),
-                quality=self.quality_var.get(),
-                steps=int(self.vs_steps_var.get()))
-            syscheck.record_check()
-            lines = []
-            for r in summary["results"]:
-                lines.append(f"[{syscheck.STATUS_MARK[r.status]}] {r['name']}: {r['detail']}")
-                if r.get("hint"):
-                    lines.append(f"    建议：{r['hint']}")
-            if summary["can_run"]:
-                est = summary["est_total_sec"]
-                lines.append("")
-                lines.append(f"结论：可以跑。预计耗时 {syscheck.format_duration(est) if est else '?'}。")
-            else:
-                lines.append("")
-                lines.append("结论：暂时跑不了 —— " + "、".join(summary["blockers"]))
-            self.sig.check_result.emit("\n".join(lines))
+            error = None
+            try:
+                diagnostics.build_zip(dest, PROJECT_ROOT, python_exe=sys.executable)
+            except Exception as e:
+                error = e
+            self.sig.diag_done.emit(dest, error)
+
         threading.Thread(target=work, daemon=True).start()
 
-    def _show_check_result(self, text):
-        box = MessageBox("环境自检", text, self)
-        box.cancelButton.hide()
-        box.buttonLayout.insertStretch(0)
-        box.exec()
+    def _diagnostics_done(self, dest, error):
+        if error is not None:
+            self.set_status(f"导出诊断包失败: {error}")
+            self._log(f"[FAIL] 导出诊断包失败: {error}")
+            InfoBar.error("导出失败", str(error), duration=4000,
+                          position=InfoBarPosition.TOP, parent=self)
+            return
+        self.set_status("诊断包已导出，把它发给开发者即可。")
+        self._log(f"[OK] 诊断包已导出: {dest}")
+        box = MessageBox("诊断包已导出",
+                          f"已生成：\n{dest}\n\n"
+                          f"内含最近日志、环境自检结果和配置（用户名路径已隐去）。\n\n"
+                          f"要现在打开所在文件夹吗？", self)
+        box.yesButton.setText("打开文件夹")
+        box.cancelButton.setText("关闭")
+        if box.exec():
+            try:
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(dest)])
+            except OSError as e:
+                self._log(f"[WARN] 无法打开文件夹: {e}")
 
     def _show_eval(self, mean):
         dlg = EvalDialog(mean, on_view=self.open_viewer, parent=self)
