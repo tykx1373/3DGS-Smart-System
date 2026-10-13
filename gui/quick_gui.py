@@ -117,6 +117,10 @@ RES_DEFAULT_BY_QUALITY = {"快速": "images_4", "标准": "images_2", "高质量
 # 高级选项窗口里所有“标签 + 控件”行统一的标签列宽，保证各分区纵向对齐
 ADV_LABEL_W = 120
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+# 降采样/归一化副本里标记“已按 EXIF 方向纠正”的文件。COLMAP 会应用 EXIF 方向
+# 而 cv2 / stb_image 不会：手机竖拍照片（orientation=6/8）若不预旋转，
+# 训练图与位姿差 90°，模型直接训废。marker 用于让旧的无纠偏副本自动失效重建。
+EXIF_MARKER = ".orientation_fixed"
 
 # 质量档位 -> (训练步数, 说明)。档位只给默认值，步数/分辨率都能在高级选项里覆盖。
 QUALITY_PRESETS = {
@@ -1359,7 +1363,46 @@ class QuickSplatApp:
         else:
             shutil.rmtree(path)
 
-    def _make_downscaled(self, dst_dir, src_dir, factor):
+    @staticmethod
+    def _scan_exif_rotations(src_dir, names):
+        """返回带 EXIF 旋转标记（orientation != 1）的文件名集合。
+
+        只读元数据不解码像素，几百张图 1 秒内。Pillow 随 customtkinter 自带。
+        读不出 EXIF 的文件（或 Pillow 缺失）按无旋转处理——维持原行为。
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            return set()
+        rotated = set()
+        for name in names:
+            try:
+                with Image.open(os.path.join(src_dir, name)) as im:
+                    exif = im.getexif()
+                    if exif and int(exif.get(274, 1)) != 1:  # 274 = Orientation
+                        rotated.add(name)
+            except Exception:
+                continue
+        return rotated
+
+    @staticmethod
+    def _decode_exif_fixed(buf):
+        """解码字节数组并按 EXIF 方向旋转到位，返回 BGR ndarray。
+
+        cv2.imdecode 会忽略 EXIF 方向，因此带旋转标记的图走 PIL：
+        exif_transpose 把像素转到正确方向，再交回 cv2 缩放编码。
+        """
+        import cv2
+        from io import BytesIO
+        from PIL import Image, ImageOps
+        with Image.open(BytesIO(buf)) as src_im:
+            im = ImageOps.exif_transpose(src_im)
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            import numpy as np
+            return cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
+
+    def _make_downscaled(self, dst_dir, src_dir, factor, rotated_names=None):
         """把 src_dir 的图片按 1/factor 缩放后写入 dst_dir，文件名保持不变
         （COLMAP 的 images.bin 按文件名索引，改名就找不到图了）。
 
@@ -1367,6 +1410,11 @@ class QuickSplatApp:
         这里生成真副本。先写 .tmp 再整体替换到位——若旧目录其实是个指向原图的
         联接，直接往里写就会覆盖用户的原图，这样能彻底避免。图片用 cv2 编解码 +
         Python 读写，避免非 ASCII 路径在 Windows 上打不开。
+
+        rotated_names：带 EXIF 旋转标记的文件名集合（见 _scan_exif_rotations）。
+        命中的图先按 EXIF 旋转到位再缩放；生成后写入 EXIF_MARKER，使旧的
+        无纠偏副本在下一次运行时被检测并重建。factor=1 表示只纠偏不缩放
+        （高质量档的“方向归一化原图副本”）。
         """
         import cv2
         import numpy as np
@@ -1376,29 +1424,44 @@ class QuickSplatApp:
             self._log(f"[WARN] 源目录中没有图片: {src_dir}")
             return False
 
-        # 已是普通目录且张数对得上 → 上次生成过，直接用
+        rotated_names = rotated_names or set()
+        has_marker = os.path.isfile(os.path.join(dst_dir, EXIF_MARKER))
+        need_exif = bool(rotated_names)
+
+        # 已是普通目录且张数对得上 → 上次生成过，直接用。但若这次检测到
+        # 旋转标记而旧副本没有纠偏标记，说明旧副本方向是错的，必须重建。
         if os.path.isdir(dst_dir) and not self._is_reparse(dst_dir):
+            stale = need_exif and not has_marker
             have = [n for n in os.listdir(dst_dir) if n.lower().endswith(IMAGE_EXTS)]
-            if len(have) == len(names):
+            if not stale and len(have) == len(names):
                 self._log(f"[INFO] {os.path.basename(dst_dir)} 已存在（{len(names)} 张），跳过生成")
                 return True
+            if stale:
+                self._log(f"[WARN] {os.path.basename(dst_dir)} 是无 EXIF 纠偏的旧副本，"
+                          f"将重新生成以纠正方向")
 
         tmp_dir = dst_dir + ".tmp"
         if os.path.exists(tmp_dir):
             self._remove_dir_or_link(tmp_dir)
         os.makedirs(tmp_dir, exist_ok=True)
 
+        fixed = 0
         done = 0
         for name in names:
             try:
                 with open(os.path.join(src_dir, name), "rb") as f:
                     buf = np.frombuffer(f.read(), dtype=np.uint8)
-                im = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                if name in rotated_names:
+                    im = self._decode_exif_fixed(buf.tobytes())
+                    fixed += 1
+                else:
+                    im = cv2.imdecode(buf, cv2.IMREAD_COLOR)
                 if im is None:
                     continue
                 h, w = im.shape[:2]
-                im = cv2.resize(im, (max(1, w // factor), max(1, h // factor)),
-                                interpolation=cv2.INTER_AREA)
+                if factor > 1:
+                    im = cv2.resize(im, (max(1, w // factor), max(1, h // factor)),
+                                    interpolation=cv2.INTER_AREA)
                 ext = os.path.splitext(name)[1].lower() or ".jpg"
                 params = [cv2.IMWRITE_JPEG_QUALITY, 95] if ext in (".jpg", ".jpeg") else []
                 enc_ok, enc = cv2.imencode(ext, im, params)
@@ -1423,7 +1486,16 @@ class QuickSplatApp:
                 self._log(f"[FAIL] 无法替换 {dst_dir}: {e}")
                 return False
         os.rename(tmp_dir, dst_dir)
-        self._log(f"[OK] 已生成 {os.path.basename(dst_dir)}（1/{factor} 分辨率），共 {done} 张")
+        if rotated_names:
+            try:
+                with open(os.path.join(dst_dir, EXIF_MARKER), "w") as f:
+                    f.write("exif orientation fixed\n")
+            except Exception:
+                pass
+        detail = f"，其中 {fixed} 张已按 EXIF 纠正方向" if fixed else ""
+        self._log(f"[OK] 已生成 {os.path.basename(dst_dir)}"
+                  f"{'（原分辨率，仅纠偏）' if factor == 1 else f'（1/{factor} 分辨率）'}，"
+                  f"共 {done} 张{detail}")
         return True
 
     # --------------------------------------------------- ensure sparse/0 ----
@@ -1701,6 +1773,17 @@ if __name__ == "__main__":
             RES_DEFAULT_BY_QUALITY.get(quality, "images_2")
         base_cap = cap_map.get(quality, 400000)
 
+        # EXIF 方向检查：COLMAP 会应用 EXIF 旋转，而 cv2 / stb_image 不会。
+        # 手机竖拍照片（orientation=6/8）若不预旋转，训练图与位姿差 90°，
+        # 模型直接训废且无任何报错。旋转图在生成副本时按 EXIF 纠偏。
+        rotated = set()
+        if os.path.isdir(img_dir):
+            img_names = [n for n in os.listdir(img_dir) if n.lower().endswith(IMAGE_EXTS)]
+            rotated = self._scan_exif_rotations(img_dir, img_names)
+            if rotated:
+                self._log(f"[INFO] 检测到 {len(rotated)} 张带旋转标记（EXIF）的照片，"
+                          f"副本将自动纠正方向")
+
         # 确保所用分辨率的降采样副本存在（幂等，已存在则秒过）。旧版本把
         # images_2 / images_4 联接到原图，等于没降采样，会在这里被换成真副本——
         # 因此「仅训练」也能把旧工作区修好。
@@ -1709,7 +1792,15 @@ if __name__ == "__main__":
             src_images = os.path.realpath(src_images) if os.path.isdir(src_images) else img_dir
             if os.path.isdir(src_images):
                 self._make_downscaled(os.path.join(ws_dir, res_dir), src_images,
-                                      2 if res_dir == "images_2" else 4)
+                                      2 if res_dir == "images_2" else 4,
+                                      rotated_names=rotated)
+        elif rotated:
+            # 高质量档训练直接读 ws/images（junction→原图），vksplat 用
+            # stb_image 读图不认 EXIF，换成方向归一化的原分辨率副本。
+            # COLMAP 读归一化副本同样正确（像素已转到正确方向）。
+            images_link = os.path.join(ws_dir, "images")
+            if os.path.isdir(images_link):
+                self._make_downscaled(images_link, img_dir, 1, rotated_names=rotated)
 
         if gpu_name == "unknown":
             cap_max = base_cap

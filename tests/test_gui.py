@@ -5,6 +5,7 @@
 """
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -238,6 +239,91 @@ class TestSaveOptions(unittest.TestCase):
         saved = self._saved()
         self.assertNotIn("train_steps", saved)
         self.assertEqual(saved["max_image_size"], 1600)
+
+
+try:
+    import cv2 as _cv2  # noqa: E402
+    _HAVE_CV2 = True
+except ImportError:
+    _HAVE_CV2 = False  # CI 只装 customtkinter，不带 opencv；相关用例跳过
+
+
+class TestExifOrientation(unittest.TestCase):
+    """手机竖拍照片带 EXIF 旋转标记：COLMAP 应用方向而 cv2/stb_image 不会，
+    训练图必须预旋转，否则与位姿差 90°、模型悄悄训废。"""
+
+    def setUp(self):
+        self.app = _bare_app()
+        self.logs = []
+        self.app._log = self.logs.append
+        self.tmp = tempfile.mkdtemp(prefix="exif_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.src = os.path.join(self.tmp, "src")
+        self.dst = os.path.join(self.tmp, "dst")
+        os.makedirs(self.src)
+
+    def _write_jpeg(self, name, size, orientation=None):
+        from PIL import Image
+        im = Image.new("RGB", size, (120, 30, 200))
+        if orientation is not None:
+            exif = im.getexif()
+            exif[274] = orientation  # Orientation
+            im.save(os.path.join(self.src, name), exif=exif)
+        else:
+            im.save(os.path.join(self.src, name))
+
+    def test_scan_missing_pillow_returns_empty(self):
+        """扫描对坏文件/缺失 Pillow 都必须安静返回，绝不阻断训练。"""
+        self.assertEqual(
+            q.QuickSplatApp._scan_exif_rotations(self.src, ["nope.jpg"]), set())
+
+    @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
+    def test_scan_finds_only_rotated(self):
+        self._write_jpeg("a.jpg", (40, 20), orientation=6)
+        self._write_jpeg("b.jpg", (40, 20))
+        rotated = q.QuickSplatApp._scan_exif_rotations(self.src, ["a.jpg", "b.jpg"])
+        self.assertEqual(rotated, {"a.jpg"})
+
+    @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
+    def test_downscaled_applies_exif_transpose(self):
+        """40x20 横放传感器 + orientation=6：COLMAP 看到 20x40 竖图，
+        纠偏后的降采样副本必须是竖的，未标记的图不受影响。"""
+        self._write_jpeg("a.jpg", (40, 20), orientation=6)
+        self._write_jpeg("b.jpg", (40, 20))
+        self.assertTrue(self.app._make_downscaled(
+            self.dst, self.src, 2, rotated_names={"a.jpg"}))
+        a = _cv2.imread(os.path.join(self.dst, "a.jpg"))
+        b = _cv2.imread(os.path.join(self.dst, "b.jpg"))
+        self.assertEqual(a.shape, (20, 10, 3))  # 竖：EXIF 已应用
+        self.assertEqual(b.shape, (10, 20, 3))  # 横：原样
+        self.assertTrue(os.path.isfile(os.path.join(self.dst, q.EXIF_MARKER)))
+
+    @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
+    def test_factor_1_normalizes_without_resize(self):
+        """高质量档的方向归一化副本：转方向、不缩放。"""
+        self._write_jpeg("a.jpg", (40, 20), orientation=6)
+        self.assertTrue(self.app._make_downscaled(
+            self.dst, self.src, 1, rotated_names={"a.jpg"}))
+        a = _cv2.imread(os.path.join(self.dst, "a.jpg"))
+        self.assertEqual(a.shape, (40, 20, 3))
+
+    @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
+    def test_stale_copy_without_marker_is_rebuilt_then_skipped(self):
+        """旧版无纠偏副本（无 marker）必须被重建；重建后第二次运行跳过。"""
+        self._write_jpeg("a.jpg", (40, 20), orientation=6)
+        self._write_jpeg("b.jpg", (40, 20))
+        os.makedirs(self.dst)
+        for n in ("a.jpg", "b.jpg"):  # 模拟旧副本：张数对、方向错、无 marker
+            shutil.copyfile(os.path.join(self.src, n), os.path.join(self.dst, n))
+        self.assertTrue(self.app._make_downscaled(
+            self.dst, self.src, 2, rotated_names={"a.jpg"}))
+        a = _cv2.imread(os.path.join(self.dst, "a.jpg"))
+        self.assertEqual(a.shape, (20, 10, 3))
+        # 第二次：有 marker → 走“跳过生成”
+        self.logs.clear()
+        self.assertTrue(self.app._make_downscaled(
+            self.dst, self.src, 2, rotated_names={"a.jpg"}))
+        self.assertTrue(any("跳过生成" in t for t in self.logs))
 
 
 def _destroy_root(root):
