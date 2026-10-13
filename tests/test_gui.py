@@ -373,6 +373,24 @@ class TestEvalReport(unittest.TestCase):
         self.assertIsNone(q.load_eval_mean(os.path.join(self.tmp, "nope.json")))
 
 
+class TestColmapMatching(unittest.TestCase):
+    """大图集匹配器自动切换与注册率解析。"""
+
+    def test_matcher_selection_threshold(self):
+        self.assertEqual(q.pick_colmap_matcher(50), "exhaustive")
+        self.assertEqual(q.pick_colmap_matcher(100), "exhaustive")  # 边界：不超过不切换
+        self.assertEqual(q.pick_colmap_matcher(101), "sequential")
+        self.assertEqual(q.pick_colmap_matcher(300), "sequential")
+
+    def test_parse_registered_images(self):
+        """model_analyzer 的真实输出格式（多行、冒号后带空格）。"""
+        out = "Cameras: 2\nImages: 49\nRegistered images: 46\nPoints: 61387\n"
+        self.assertEqual(q.parse_registered_images(out), 46)
+        self.assertIsNone(q.parse_registered_images("no match here"))
+        self.assertIsNone(q.parse_registered_images(""))
+        self.assertIsNone(q.parse_registered_images(None))
+
+
 def _destroy_root(root):
     """销毁窗口前取消挂起的 after 回调。
 

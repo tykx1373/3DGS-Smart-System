@@ -141,6 +141,25 @@ _TQDM_RE = re.compile(
     r"(?:\s*\[(?P<elapsed>[0-9:]+)<(?P<eta>[0-9:?]+))?"
 )
 
+# ---- COLMAP 匹配器与注册率 ----
+# exhaustive 匹配是 O(n²)：超过约 100 张后（尤其 noCUDA 版）会慢到不可用。
+SEQUENTIAL_MATCHER_THRESHOLD = 100
+# mapper 后注册率（成功定位的照片占比）低于此值时提示补拍——
+# 提前诊断比等训练阶段报 "Failed to load image" 好得多。
+LOW_REGISTRATION_RATE = 0.7
+
+
+def pick_colmap_matcher(n_imgs):
+    """按照片数选匹配器：大图集用 sequential（要求文件名按拍摄顺序命名，
+    手机相机默认如此），小图集仍用最稳的 exhaustive。"""
+    return "sequential" if n_imgs > SEQUENTIAL_MATCHER_THRESHOLD else "exhaustive"
+
+
+def parse_registered_images(analyzer_output):
+    """从 `colmap model_analyzer` 输出解析 Registered images 数；解析不到返回 None。"""
+    m = re.search(r"Registered images:\s*(\d+)", analyzer_output or "")
+    return int(m.group(1)) if m else None
+
 
 # ------------------------------------------------------------ tooltips ----
 # 各控件的悬浮说明。以控件文字为键；输入框/下拉框这类没有自身文字的控件，
@@ -2127,9 +2146,16 @@ if __name__ == "__main__":
         if self.stop_flag:
             return None, None, None
 
+        n_imgs = self._count_images(img_dir)
+        matcher = pick_colmap_matcher(n_imgs)
+        if matcher == "sequential":
+            self._log(f"[INFO] 共 {n_imgs} 张照片（>{SEQUENTIAL_MATCHER_THRESHOLD}），"
+                      f"自动切换 sequential 匹配（要求文件名按拍摄顺序命名，手机默认如此；"
+                      f"若重建效果差，可按名称排序后重试）。")
+
         self._log("===== 步骤 2/3: COLMAP 特征匹配 =====")
         if not self.run_cmd([
-            colmap_exe, "exhaustive_matcher",
+            colmap_exe, f"{matcher}_matcher",
             "--database_path", db_path,
         ], env=colmap_env, colmap=True):
             return None, None, None
@@ -2147,7 +2173,34 @@ if __name__ == "__main__":
             return None, None, None
 
         sparse_zero = self._ensure_sparse_zero(sparse_dir)
+        self._check_registration(colmap_exe, colmap_env, sparse_zero, n_imgs)
         return colmap_exe, colmap_env, sparse_zero
+
+    def _check_registration(self, colmap_exe, colmap_env, sparse_zero, n_imgs):
+        """mapper 后检查注册率（成功定位的照片占比）。
+
+        过低说明照片重叠不足/缺乏纹理——现在就告诉用户补拍，
+        比等训练阶段报 "Failed to load image" 再猜原因好得多。
+        检查本身失败不影响后续训练。"""
+        if not n_imgs:
+            return
+        try:
+            r = subprocess.run(
+                [colmap_exe, "model_analyzer", "--path", sparse_zero],
+                capture_output=True, text=True, timeout=120, env=colmap_env)
+        except Exception as e:
+            self._log(f"[WARN] 注册率检查失败（不影响训练）: {e}")
+            return
+        registered = parse_registered_images(r.stdout)
+        if registered is None:
+            return
+        pct = registered / n_imgs * 100
+        if registered / n_imgs < LOW_REGISTRATION_RATE:
+            self._log(f"[WARN] 注册率 {pct:.0f}%（{registered}/{n_imgs} 张）："
+                      f"未能定位的照片过多，通常是照片重叠不足或画面缺乏纹理。"
+                      f"建议绕物体多拍一圈（每张重叠 60% 以上）后重新生成。")
+        else:
+            self._log(f"[INFO] 注册率 {pct:.0f}%（{registered}/{n_imgs} 张）。")
 
     def _run_train(self, ws_dir, img_dir, sparse_zero, output_ply):
         self._log("===== 步骤 4/5: VkSplat 训练 (Vulkan) =====")
