@@ -422,6 +422,56 @@ def _cfg_choice(cfg, key, valid, default):
     return v if v in valid else default
 
 
+def load_eval_mean(json_path):
+    """安全读取 eval.json 的 mean 指标；文件缺失/损坏返回 None。"""
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+        mean = data.get("mean")
+        return mean if isinstance(mean, dict) else None
+    except Exception:
+        return None
+
+
+def judge_eval_metrics(mean_obj):
+    """把 eval.json 的 mean 指标转成给用户看的人话。
+
+    返回 (判定文案, 等级, 明细行)。等级 good / mid / bad / none，
+    PSNR 是主判定（最直观）。LPIPS 权重未下载时 eval.json 里没有这两项，
+    缺哪行就不显示哪行。明细行形如 (指标名, 数值串, 判读)。
+    """
+    if not isinstance(mean_obj, dict):
+        return "未拿到评测指标", "none", []
+    try:
+        psnr = float(mean_obj["psnr"])
+    except (KeyError, TypeError, ValueError):
+        return "未拿到评测指标", "none", []
+    try:
+        ssim = float(mean_obj.get("ssim"))
+    except (TypeError, ValueError):
+        ssim = None
+
+    if psnr >= 25:
+        verdict, level = "质量不错", "good"
+    elif psnr >= 20:
+        verdict, level = "质量一般，可尝试更高档位或更多训练步数", "mid"
+    else:
+        verdict, level = "质量偏低：检查照片是否清晰、重叠是否足够，或提高档位重训", "bad"
+
+    rows = [("PSNR", f"{psnr:.2f} dB",
+             "像素误差，越高越好（>25 不错，<20 通常有问题）")]
+    if ssim is not None:
+        rows.append(("SSIM", f"{ssim:.3f}",
+                     "结构相似度，越高越好（0~1）"))
+    for key, label in (("lpips_vgg", "LPIPS VGG"), ("lpips_alex", "LPIPS Alex")):
+        try:
+            v = float(mean_obj[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append((label, f"{v:.3f}", "感知相似度，越低越好"))
+    return verdict, level, rows
+
+
 def _make_group(parent, title):
     """创建带标题的分组容器（替代 ttk.LabelFrame）。"""
     outer = ctk.CTkFrame(parent, corner_radius=8)
@@ -753,6 +803,57 @@ class QuickSplatApp:
                 subprocess.Popen(["explorer", "/select,", os.path.normpath(dest)])
             except Exception as e:
                 self._log(f"[WARN] 无法打开文件夹: {e}")
+
+    # ------------------------------------------------------ eval popup ----
+    def _show_eval_popup(self, mean_obj):
+        """训练结束后展示质量指标（须在主线程调用，经 root.after 调度）。"""
+        old = getattr(self, "_eval_popup", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except Exception:
+                pass
+            self._eval_popup = None
+
+        verdict, level, rows = judge_eval_metrics(mean_obj)
+        color = {"good": "#22c55e", "mid": "#f59e0b",
+                 "bad": "#ef4444", "none": "#888888"}[level]
+
+        win = ctk.CTkToplevel(self.root)
+        self._eval_popup = win
+        win.title("训练完成 · 质量评估")
+        win.transient(self.root)
+        win.resizable(False, False)
+        win.after(60, win.lift)
+
+        body = ctk.CTkFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=(16, 8))
+
+        ctk.CTkLabel(body, text="训练完成", font=FONT_TITLE).pack(anchor="w")
+        ctk.CTkLabel(body, text=verdict, font=FONT_STEP,
+                     text_color=color, wraplength=380,
+                     justify="left").pack(anchor="w", pady=(6, 10))
+
+        for name, value, hint in rows:
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", pady=3)
+            ctk.CTkLabel(row, text=name, font=FONT_STEP, width=110,
+                         anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=value, font=FONT_STEP, width=90,
+                         anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=hint, font=FONT_HINT, text_color="#888",
+                         anchor="w").pack(side="left")
+
+        ctk.CTkLabel(body, text="逐图明细见模型输出目录里的 eval.json",
+                     font=FONT_HINT, text_color="#888").pack(anchor="w", pady=(12, 0))
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(fill="x", padx=20, pady=(10, 16))
+        ctk.CTkButton(btns, text="查看 3D 模型", width=130,
+                      command=self._open_viewer).pack(side="left")
+        ctk.CTkButton(btns, text="关闭", width=90, command=win.destroy,
+                      fg_color="transparent", border_width=1,
+                      text_color=("#3b82f6", "#60a5fa")).pack(side="left", padx=8)
 
     # --------------------------------------------------- advanced panel ----
     def _build_advanced_panel(self):
@@ -1941,6 +2042,7 @@ if __name__ == "__main__":
             if os.path.exists(ply_path):
                 shutil.copy2(ply_path, output_ply)
                 self._log(f"[OK] 已将 PLY 复制到: {output_ply}")
+                self._report_eval(os.path.join(target, "eval.json"))
                 return True
 
         if os.path.isdir(output_dir):
@@ -1957,7 +2059,22 @@ if __name__ == "__main__":
             if newest_ply:
                 shutil.copy2(newest_ply, output_ply)
                 self._log(f"[OK] 已将最新 PLY 复制到: {output_ply}")
+                self._report_eval(os.path.join(os.path.dirname(newest_ply), "eval.json"))
         return True
+
+    def _report_eval(self, eval_json_path):
+        """训练收取完成后汇报质量指标：写日志 + 弹窗（跨线程经 root.after 调度）。"""
+        mean = load_eval_mean(eval_json_path)
+        if mean is None:
+            return  # 评测被关闭或未完成（退出码非 0 那条路），不打扰
+        verdict, level, rows = judge_eval_metrics(mean)
+        summary = "  ".join(f"{n}={v}" for n, v, _ in rows)
+        prefix = {"good": "[OK]", "mid": "[INFO]", "bad": "[WARN]"}.get(level, "[INFO]")
+        self._log(f"{prefix} 质量评估：{verdict}（{summary}）")
+        try:
+            self.root.after(0, self._show_eval_popup, mean)
+        except Exception:
+            pass  # 界面已关闭等场景：日志里已有指标，弹窗丢就丢
 
     # ----------------------------------------------------------- pipeline ----
     def _run_colmap(self, img_dir, ws_dir):

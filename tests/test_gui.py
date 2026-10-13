@@ -326,6 +326,53 @@ class TestExifOrientation(unittest.TestCase):
         self.assertTrue(any("跳过生成" in t for t in self.logs))
 
 
+class TestEvalReport(unittest.TestCase):
+    """训练结束后的指标弹窗：阈值判定、缺失 LPIPS、坏文件都不能炸。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="evalrep_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _write(self, payload, name="eval.json"):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        return path
+
+    def test_good_psnr(self):
+        verdict, level, rows = q.judge_eval_metrics(
+            {"psnr": 27.5, "ssim": 0.9, "lpips_vgg": 0.08})
+        self.assertEqual(level, "good")
+        self.assertIn("质量不错", verdict)
+        names = [r[0] for r in rows]
+        self.assertEqual(names, ["PSNR", "SSIM", "LPIPS VGG"])
+
+    def test_mid_and_bad_thresholds(self):
+        self.assertEqual(q.judge_eval_metrics({"psnr": 22.0})[1], "mid")
+        self.assertEqual(q.judge_eval_metrics({"psnr": 15.0})[1], "bad")
+        self.assertIn("档位", q.judge_eval_metrics({"psnr": 15.0})[0])
+
+    def test_missing_lpips_is_fine(self):
+        """LPIPS 权重未下载时 eval.json 只有 PSNR/SSIM，弹窗不能缺行报错。"""
+        verdict, level, rows = q.judge_eval_metrics({"psnr": 26.0, "ssim": 0.8})
+        self.assertEqual(level, "good")
+        self.assertEqual([r[0] for r in rows], ["PSNR", "SSIM"])
+
+    def test_broken_or_missing_mean_is_neutral(self):
+        for mean in (None, {}, {"ssim": 0.9}, "junk", 42):
+            verdict, level, rows = q.judge_eval_metrics(mean)
+            self.assertEqual(level, "none")
+            self.assertEqual(rows, [])
+
+    def test_load_eval_mean(self):
+        good = self._write({"mean": {"psnr": 26.0}, "images": [1, 2]})
+        self.assertEqual(q.load_eval_mean(good), {"psnr": 26.0})
+        # 结构不符 / 损坏 / 不存在 → None
+        self.assertIsNone(q.load_eval_mean(self._write({"images": []}, "bad1.json")))
+        self.assertIsNone(q.load_eval_mean(self._write("not dict", "bad2.json")))
+        self.assertIsNone(q.load_eval_mean(os.path.join(self.tmp, "nope.json")))
+
+
 def _destroy_root(root):
     """销毁窗口前取消挂起的 after 回调。
 
