@@ -391,6 +391,83 @@ class TestColmapMatching(unittest.TestCase):
         self.assertIsNone(q.parse_registered_images(None))
 
 
+class TestHistoryModels(unittest.TestCase):
+    """历史模型扫描：只有含 PLY 的目录才算模型，指标/步数从文件推。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="hist_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.out = os.path.join(self.tmp, "outputs")
+        os.makedirs(self.out)
+
+    def _model_dir(self, name, ply=True, eval_json=None, config_json=None,
+                   ply_size=200 * 1024):
+        d = os.path.join(self.out, name)
+        os.makedirs(d)
+        if ply:
+            with open(os.path.join(d, "splat.ply"), "wb") as f:
+                f.write(b"x" * ply_size)
+        if eval_json is not None:
+            with open(os.path.join(d, "eval.json"), "w", encoding="utf-8") as f:
+                json.dump({"mean": eval_json, "images": []}, f)
+        if config_json is not None:
+            with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+                json.dump(config_json, f)
+        return d
+
+    def test_missing_dir_returns_empty(self):
+        self.assertEqual(q.scan_history_models(os.path.join(self.tmp, "nope")), [])
+
+    def test_dirs_without_ply_are_ignored(self):
+        self._model_dir("20260101_000000_dead", ply=False,
+                        config_json={"train_steps": 5000})  # 训练崩溃残留
+        self.assertEqual(q.scan_history_models(self.out), [])
+
+    def test_named_dir_parses_steps_quality_and_metrics(self):
+        self._model_dir("vksplat_15000steps_standard",
+                        eval_json={"psnr": 26.0, "ssim": 0.85})
+        items = q.scan_history_models(self.out)
+        self.assertEqual(len(items), 1)
+        it = items[0]
+        self.assertEqual(it["steps"], 15000)
+        self.assertEqual(it["quality"], "标准")
+        self.assertEqual(it["metrics"]["psnr"], 26.0)
+        self.assertEqual(it["level"], "good")
+        self.assertGreater(it["size_mb"], 0)
+
+    def test_timestamp_dir_falls_back_to_config_steps(self):
+        d = self._model_dir("20260101_120000_scene",
+                            eval_json={"psnr": 15.0},
+                            config_json={"train_steps": 30000})
+        items = q.scan_history_models(self.out)
+        self.assertEqual(items[0]["steps"], 30000)
+        self.assertIsNone(items[0]["quality"])
+        self.assertEqual(items[0]["level"], "bad")
+        self.assertEqual(items[0]["dir"], d)
+
+    def test_sorted_newest_first(self):
+        d1 = self._model_dir("vksplat_5000steps_fast")
+        d2 = self._model_dir("vksplat_15000steps_standard")
+        os.utime(d1, (1000, 1000))
+        os.utime(d2, (2000, 2000))
+        items = q.scan_history_models(self.out)
+        self.assertEqual([os.path.basename(i["dir"]) for i in items],
+                         ["vksplat_15000steps_standard", "vksplat_5000steps_fast"])
+
+    def test_delete_guardrails(self):
+        d = self._model_dir("vksplat_5000steps_fast")
+        # 越界路径拒绝
+        other = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(other)
+        ok, _ = q.delete_history_model(other, self.out)
+        self.assertFalse(ok)
+        self.assertTrue(os.path.isdir(other))
+        # 界内正常删除
+        ok, _ = q.delete_history_model(d, self.out)
+        self.assertTrue(ok)
+        self.assertFalse(os.path.exists(d))
+
+
 def _destroy_root(root):
     """销毁窗口前取消挂起的 after 回调。
 
