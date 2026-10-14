@@ -21,6 +21,12 @@ from datetime import datetime
 LOG_TAIL_LINES = 3000
 MAX_LOG_FILES = 3
 
+# 安装版（根目录有启动器）与开发仓库给出不同的修复指引
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+INSTALL_MODE = os.path.isfile(os.path.join(PROJECT_ROOT, "3DGS-Studio.exe"))
+REPAIR_HINT = ("请重新运行安装程序并选择修复" if INSTALL_MODE
+               else "请重新运行 download_tools.bat")
+
 
 # ------------------------------------------------------- 失败原因解读 ----
 # 正则都对应 VkSplat / COLMAP 里真实存在的报错原文（见 tools/vksplat/vksplat/src），
@@ -47,20 +53,22 @@ _FAILURE_HINTS = (
     (r"Failed to (open|read) file:.*\.spv|Failed to create shader module",
      "Vulkan 着色器文件读不到或编译失败：多为安装不完整、路径含中文等非 ASCII 字符，"
      "或显卡驱动过旧",
-     "把项目移到纯英文路径（例如 D:\\3DGS）后重试；仍失败就重跑 download_tools.bat，"
-     "并更新显卡驱动（需 Vulkan 1.3+）"),
+     ("把项目移到纯英文路径（例如 D:\\3DGS）后重试；仍失败就" + REPAIR_HINT
+      + "，并更新显卡驱动（需 Vulkan 1.3+）")),
     (r"Cannot open file:",
      "读不到 COLMAP 的输出文件：重建可能没跑完，或目录权限/路径有问题",
      "删掉该工作区的 sparse 目录后重跑空间定位；避免把项目放在需要管理员权限的目录"),
     (r"ModuleNotFoundError.*\b(torch|torchvision|torchmetrics)\b|"
      r"No module named '(torch|torchvision|torchmetrics)'",
      "环境里缺少 torch / torchvision / torchmetrics，训练结束后的评测会失败",
-     "在 env/vksplat 里补装（pip install torch torchvision torchmetrics），"
-     "或直接重跑 download_tools.bat"),
+     (REPAIR_HINT if INSTALL_MODE
+      else "在 env/vksplat 里补装（pip install torch torchvision torchmetrics），"
+           "或直接重新运行 download_tools.bat")),
     (r"CUDA out of memory",
      "评测阶段显存不够（评测本应走 CPU，出现该报错通常是环境被装成了 CUDA 版 torch）",
-     "确认 env/vksplat 里装的是 CPU 版 torch（PyPI 的 Windows 轮子即为 CPU 版），"
-     "或重跑 download_tools.bat"),
+     (REPAIR_HINT if INSTALL_MODE
+      else "确认 env/vksplat 里装的是 CPU 版 torch（PyPI 的 Windows 轮子即为 CPU 版），"
+           "或重跑 download_tools.bat")),
 )
 
 # Windows 常见退出码 -> 说明。这些数字直接看毫无意义，至少给个方向。

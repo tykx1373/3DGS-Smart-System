@@ -23,6 +23,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 VKSPLAT_SRC = os.path.join(PROJECT_ROOT, "tools", "vksplat", "vksplat")
 CACHE_PATH = os.path.join(PROJECT_ROOT, ".syscheck.json")
+# 安装版根目录有启动器；开发仓库没有。缺失组件时的修复提示据此区分
+INSTALL_MODE = os.path.isfile(os.path.join(PROJECT_ROOT, "3DGS-Studio.exe"))
+REPAIR_HINT = ("请重新运行安装程序并选择修复" if INSTALL_MODE
+               else "请重新运行 download_tools.bat")
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
@@ -237,7 +241,7 @@ def check_vksplat_module():
     pyds = glob.glob(os.path.join(VKSPLAT_SRC, "vksplat.cp*-win_amd64.pyd"))
     if not pyds:
         return CheckResult("vksplat 模块", FAIL, "未找到预编译 .pyd",
-                           "运行 download_tools.bat 安装，或自行编译 tools/vksplat/vksplat")
+                           REPAIR_HINT + ("，或自行编译 tools/vksplat/vksplat" if not INSTALL_MODE else ""))
     names = [os.path.basename(p) for p in pyds]
     if not any(tag in n for n in names):
         return CheckResult("vksplat 模块", FAIL, f"ABI 不匹配，现有 {', '.join(names)}",
@@ -249,7 +253,7 @@ def check_vksplat_module():
         return CheckResult("vksplat 模块", OK, f"{tag} 已加载")
     except Exception as e:
         return CheckResult("vksplat 模块", FAIL, f"import 失败: {e}",
-                           "重新运行 download_tools.bat")
+                           REPAIR_HINT)
 
 
 def check_dependencies():
@@ -349,7 +353,7 @@ def check_colmap(colmap_path=None):
                 rel = c
             return CheckResult("COLMAP", OK, f"{rel}（{variant}）")
     return CheckResult("COLMAP", FAIL, "未找到 COLMAP.bat",
-                       "运行 download_tools.bat 下载 COLMAP")
+                       REPAIR_HINT + (" 下载 COLMAP" if not INSTALL_MODE else ""))
 
 
 def find_vkgs_exe():
@@ -369,7 +373,8 @@ def check_vkgs(vkgs_exe=None):
         except ValueError:
             return CheckResult("VKGS 查看器", OK, p)
     return CheckResult("VKGS 查看器", WARN, "未找到 vk_gaussian_splatting.exe",
-                       "运行 download_tools.bat 下载；缺失仅影响第③步查看结果")
+                       REPAIR_HINT + (" 下载" if not INSTALL_MODE else "")
+                       + "；缺失仅影响第③步查看结果")
 
 
 def check_disk(min_free_gb=5.0):

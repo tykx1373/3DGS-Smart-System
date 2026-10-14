@@ -460,4 +460,10 @@ sample/
 # Personal learning notes (not part of the repo)
 notes/
 
+# Installer build artifacts (PyInstaller intermediate/output + Inno Setup)
+/3DGS-Studio.exe
+installer/build/
+installer/dist/
+installer/output/
+
 

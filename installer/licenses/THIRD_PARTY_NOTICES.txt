@@ -1,0 +1,76 @@
+﻿第三方软件声明 (THIRD-PARTY NOTICES)
+3DGS 快速管线 2.0.0
+================================================================
+
+本软件为多个开源组件的聚合分发。以下列出主要随附组件及其许可证；
+完整、权威的许可文本以各组件自身附带的 LICENSE / dist-info 元数据为准。
+
+----------------------------------------------------------------
+1. PySide6 / shiboken6 / Qt
+----------------------------------------------------------------
+  组件:    PySide6 6.8.3、shiboken6 6.8.3、Qt 6.8 运行库
+  版权:    Copyright (C) The Qt Company Ltd. 及其他贡献者
+  许可:    GNU Lesser General Public License v3 (LGPL v3)
+           与商业许可双许可模式
+  链接方式: 动态链接，未修改库本身
+  你的权利: 可自行替换 env\vksplat\Lib\site-packages 下的
+           PySide6、shiboken6 及 Qt6*.dll 文件为其他兼容版本。
+  源码:    https://download.qt.io/official_releases/QtForPython/
+  LGPL 全文: 与本文件同目录的 lgpl-3.0.txt
+
+----------------------------------------------------------------
+2. Python 解释器
+----------------------------------------------------------------
+  组件:    CPython 3.10
+  版权:    Copyright (C) 2001-2026 Python Software Foundation
+  许可:    Python Software Foundation License (PSF-2.0)
+  网址:    https://www.python.org/
+
+----------------------------------------------------------------
+3. 深度学习与数值计算
+----------------------------------------------------------------
+  PyTorch 2.14.0           BSD 3-Clause   https://pytorch.org/
+  torchvision 0.19+        BSD 3-Clause
+  torchmetrics             Apache License 2.0
+  NumPy                    BSD 3-Clause   https://numpy.org/
+  Pillow (PIL)             Historical Permission Notice and Disclaimer
+  tqdm                     Mozilla Public License / MIT
+  OpenCV (opencv-python)   Apache License 2.0
+  torch_fidelity           Apache License 2.0
+
+----------------------------------------------------------------
+4. 三维重建 / 高斯溅射工具链
+----------------------------------------------------------------
+  COLMAP
+    许可:  BSD 3-Clause License
+    网址:  https://colmap.github.io/
+    位置:  tools\colmap-x64-windows-cuda
+    说明:  COLMAP 的 CUDA 构建版可能随附 NVIDIA CUDA Runtime 等
+           NVIDIA 组件，其使用受 NVIDIA 最终用户许可协议约束。
+
+  VkSplat
+    许可:  Apache License 2.0
+    位置:  tools\vksplat（含 LICENSE 与完整源码）
+
+  vk_gaussian_splatting（实时查看器，2026.2.9 Windows 版）
+    位置:  tools\vkgs-2026.2.9-windows-64bits
+    说明:  二进制按上游发布原样随附，版权与许可以上游发布页面
+           为准。目录内随附的 NVIDIA DLSS 运行库
+           (nvngx_dlss*.dll) 受 NVIDIA 许可协议约束。
+
+  Slang 编译器 (slang-compiler.dll / slang-glslang.dll)
+    许可:  MIT License  https://shader-slang.com/
+
+----------------------------------------------------------------
+5. 本软件自有代码
+----------------------------------------------------------------
+  许可:  Apache License 2.0
+  全文:  安装目录上层 LICENSE
+  网址:  见项目 README
+
+================================================================
+许可证全文目录：
+  lgpl-3.0.txt              GNU LGPL v3 全文
+  （Apache-2.0 全文见安装目录根 LICENSE；其余许可文本见各组件
+    自带的 LICENSE / 元数据目录）
+================================================================

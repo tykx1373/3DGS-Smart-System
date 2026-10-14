@@ -801,7 +801,10 @@ if __name__ == "__main__":
                 colmap_path = nocuda_path
                 self._log("[INFO] 自动选择 COLMAP noCUDA 版本（兼容所有显卡）。")
             else:
-                self._log("[FAIL] COLMAP 路径未找到，请先运行 download_tools.bat。")
+                repair = ("请重新运行安装程序并选择修复。"
+                          if os.path.isfile(os.path.join(PROJECT_ROOT, "3DGS-Studio.exe"))
+                          else "请先运行 download_tools.bat。")
+                self._log(f"[FAIL] COLMAP 路径未找到，{repair}")
                 return None, None, None
         else:
             if "cuda" in colmap_path.lower() and not is_nvidia and os.path.exists(nocuda_path):

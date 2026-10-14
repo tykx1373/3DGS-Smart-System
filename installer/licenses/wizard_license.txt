@@ -1,0 +1,47 @@
+﻿3DGS 快速管线 —— 软件许可与第三方组件声明
+
+版权所有 (C) 2026 3DGS Studio
+
+一、本软件自有代码
+本软件的自有源代码（gui、tools/vksplat 中的自有部分及启动器等）依据
+Apache License 2.0 许可发布，许可证全文见安装目录下的 LICENSE 文件。
+许可地址：https://www.apache.org/licenses/LICENSE-2.0
+
+二、随附的第三方开源组件
+本安装包以聚合方式随附以下第三方组件，其版权归各自权利人所有，
+并沿用其原许可证。你对这些组件的使用同时受对应许可证条款约束：
+
+  1. PySide6 6.8.3、shiboken6 6.8.3 及 Qt 运行库
+     The Qt Company Ltd. 等，GNU LGPL v3 / 商业双许可。
+     本软件以动态链接方式使用它们，未对其作任何修改。
+     根据 LGPL v3 第 4 节，你有权自行替换安装目录
+     env\vksplat\Lib\site-packages 下的 PySide6 / shiboken6
+     文件，以使用你自己选择的版本。LGPL v3 许可证全文见
+     安装目录 licenses\lgpl-3.0.txt；源码获取地址：
+     https://download.qt.io/official_releases/QtForPython/
+
+  2. Python 3.10 —— Python Software Foundation License (PSF)
+  3. PyTorch / torchvision —— BSD 3-Clause License
+  4. OpenCV —— Apache License 2.0
+  5. NumPy —— BSD 3-Clause License
+  6. COLMAP —— BSD 3-Clause License（二进制随附于 tools 目录）
+  7. VkSplat —— Apache License 2.0（源码与许可见 tools\vksplat）
+  8. vk_gaussian_splatting 查看器 —— 二进制由上游发布，
+     版权与许可以上游发布为准（见 tools 对应目录）
+  9. 其余 Python 依赖包 —— 许可见各自包目录内的元数据（dist-info）
+
+更完整的第三方声明见安装目录 licenses\THIRD_PARTY_NOTICES.txt。
+
+三、免责声明
+本软件按"现状"提供，不提供任何明示或默示担保，包括但不限于对
+适销性、特定用途适用性及不侵权的担保。在任何情况下，作者或版权
+持有人均不对因使用本软件而产生的任何直接或间接损失负责。
+训练与渲染的速度、效果取决于你的硬件（尤其需要支持 Vulkan 的
+NVIDIA/AMD/Intel 独立显卡）与输入照片质量。
+
+四、数据保留
+卸载程序不会删除你的工作数据：安装目录下的 workspaces（照片与
+项目）、outputs（生成的模型）和 logs（日志）将被保留，你可以
+随时手动删除。
+
+点击"我接受"即表示你同意本声明及上述各许可证的条款。

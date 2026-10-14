@@ -1074,11 +1074,18 @@ class MainWindow(QMainWindow, PipelineCore):
         dest = diagnostics.default_dest(PROJECT_ROOT)
         self.set_status("正在收集诊断信息...")
         self._log(f"[INFO] 正在导出诊断包: {dest}")
+        # GUI 可能由 pythonw（无控制台）启动，但 doctor.py 是被 PIPE 捕获的
+        # 子进程；优先用同名 python.exe，避免个别环境下 pythonw 行为差异。
+        doctor_py = sys.executable
+        if doctor_py.lower().endswith("pythonw.exe"):
+            cand = doctor_py[: -len("pythonw.exe")] + "python.exe"
+            if os.path.exists(cand):
+                doctor_py = cand
 
         def work():
             error = None
             try:
-                diagnostics.build_zip(dest, PROJECT_ROOT, python_exe=sys.executable)
+                diagnostics.build_zip(dest, PROJECT_ROOT, python_exe=doctor_py)
             except Exception as e:
                 error = e
             self.sig.diag_done.emit(dest, error)
