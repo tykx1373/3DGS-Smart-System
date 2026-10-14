@@ -1,13 +1,18 @@
-﻿<#
+<#
 .SYNOPSIS
-    构建 3DGS 快速管线 setup.exe 安装包。
+    Build the 3DGS Quick Pipeline setup.exe installer.
 .DESCRIPTION
-    1) 用便携环境中的 PyInstaller 重新构建无控制台启动器 3DGS-Studio.exe
-    2) 把启动器临时放到仓库根（供 Inno Setup 打包）
-    3) 调用 ISCC 编译 installer\setup.iss
-    4) 清理临时副本，输出 installer\output\3DGS-Studio-Setup-2.0.0.exe
+    1) Build the console-less launcher 3DGS-Studio.exe with PyInstaller
+       (using the portable Python env)
+    2) Stage the launcher at the repo root (Inno Setup picks it up there)
+    3) Compile installer\setup.iss with ISCC
+    4) Remove the staged copy; output installer\output\3DGS-Studio-Setup-2.0.0.exe
+
+    NOTE: this script must stay ASCII-only without BOM. Windows PowerShell 5.1
+    decodes BOM-less .ps1 files as ANSI; any non-ASCII byte would turn into
+    mojibake (tests/test_repo_rules.py enforces this).
 .PARAMETER SkipLauncherBuild
-    跳过 PyInstaller 构建，直接使用 installer\dist\3DGS-Studio.exe。
+    Reuse installer\dist\3DGS-Studio.exe instead of rebuilding it.
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File installer\build_setup.ps1
 #>
@@ -24,11 +29,11 @@ $StagingExe = Join-Path $RepoRoot '3DGS-Studio.exe'
 $BuiltExe = Join-Path $InstallerDir 'dist\3DGS-Studio.exe'
 $SetupScript = Join-Path $InstallerDir 'setup.iss'
 
-Write-Host '== [1/4] 环境检查 ==' -ForegroundColor Cyan
-if (-not (Test-Path $PyExe)) { throw "未找到便携 Python：$PyExe" }
-if (-not (Test-Path $SetupScript)) { throw "未找到 $SetupScript" }
+Write-Host '== [1/4] Environment check ==' -ForegroundColor Cyan
+if (-not (Test-Path $PyExe)) { throw "Portable Python not found: $PyExe" }
+if (-not (Test-Path $SetupScript)) { throw "Setup script not found: $SetupScript" }
 
-# 查找 ISCC（常见安装位置 + PATH）
+# Locate ISCC (common install locations + PATH)
 $isccCandidates = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 7\ISCC.exe'),
     (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe'),
@@ -41,35 +46,35 @@ $cmd = Get-Command iscc.exe -ErrorAction SilentlyContinue
 if ($cmd) { $isccCandidates = @($cmd.Source) + $isccCandidates }
 $Iscc = $isccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $Iscc) {
-    throw '未找到 Inno Setup 编译器 ISCC.exe，请先安装 Inno Setup 6/7：https://jrsoftware.org/isdl.php'
+    throw 'Inno Setup compiler ISCC.exe not found. Install Inno Setup 6/7: https://jrsoftware.org/isdl.php'
 }
 Write-Host "ISCC: $Iscc"
 
 try {
     if ($SkipLauncherBuild) {
-        Write-Host '== [2/4] 跳过启动器构建（-SkipLauncherBuild）==' -ForegroundColor Cyan
+        Write-Host '== [2/4] Skipping launcher build (-SkipLauncherBuild) ==' -ForegroundColor Cyan
     } else {
-        Write-Host '== [2/4] PyInstaller 构建启动器 ==' -ForegroundColor Cyan
+        Write-Host '== [2/4] Building launcher with PyInstaller ==' -ForegroundColor Cyan
         Push-Location $InstallerDir
         try {
             & $PyExe -m PyInstaller --clean --noconfirm launcher.spec
-            if ($LASTEXITCODE -ne 0) { throw 'PyInstaller 构建失败' }
+            if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
         } finally {
             Pop-Location
         }
     }
-    if (-not (Test-Path $BuiltExe)) { throw "未找到构建产物：$BuiltExe" }
+    if (-not (Test-Path $BuiltExe)) { throw "Launcher build output missing: $BuiltExe" }
 
-    Write-Host '== [3/4] 暂存启动器到仓库根 ==' -ForegroundColor Cyan
+    Write-Host '== [3/4] Staging launcher at repo root ==' -ForegroundColor Cyan
     Copy-Item $BuiltExe $StagingExe -Force
 
-    Write-Host '== [4/4] Inno Setup 编译（3 GB 输入，LZMA2 压缩约需 10-40 分钟）==' -ForegroundColor Cyan
+    Write-Host '== [4/4] Compiling with Inno Setup (~3 GB input, LZMA2, 10-40 min) ==' -ForegroundColor Cyan
     & $Iscc $SetupScript
-    if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（退出码 $LASTEXITCODE）" }
+    if ($LASTEXITCODE -ne 0) { throw "ISCC compilation failed (exit code $LASTEXITCODE)" }
 } finally {
     if (Test-Path $StagingExe) {
         Remove-Item $StagingExe -Force
-        Write-Host '已清理仓库根临时启动器副本' -ForegroundColor DarkGray
+        Write-Host 'Removed staged launcher copy from repo root' -ForegroundColor DarkGray
     }
 }
 
@@ -77,7 +82,7 @@ $out = Join-Path $InstallerDir 'output\3DGS-Studio-Setup-2.0.0.exe'
 if (Test-Path $out) {
     $mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
     Write-Host ''
-    Write-Host "构建成功：$out ($mb MB)" -ForegroundColor Green
+    Write-Host "Build succeeded: $out ($mb MB)" -ForegroundColor Green
 } else {
-    throw '编译结束但未找到输出文件'
+    throw 'Compilation finished but output file is missing'
 }
