@@ -51,14 +51,14 @@ exit /b 1
 echo [OK] Using Python: !PYEXE!
 
 REM ---- Check PySide6 (GUI) ----
-"!PYEXE!" -c "import PySide6, qfluentwidgets" >nul 2>nul
+"!PYEXE!" -c "import PySide6" >nul 2>nul
 if errorlevel 1 (
-  echo [WARN] PySide6 / qfluentwidgets not found. Trying pip install...
-  "!PYEXE!" -m pip install "PySide6>=6.8,<6.9" PySide6-Fluent-Widgets
-  "!PYEXE!" -c "import PySide6, qfluentwidgets" >nul 2>nul
+  echo [WARN] PySide6 not found. Trying pip install...
+  "!PYEXE!" -m pip install "PySide6>=6.8,<6.9"
+  "!PYEXE!" -c "import PySide6" >nul 2>nul
   if errorlevel 1 (
-    echo [FAIL] GUI dependencies install failed. Re-run download_tools.bat or:
-    echo        pip install "PySide6>=6.8,<6.9" PySide6-Fluent-Widgets
+    echo [FAIL] GUI dependency install failed. Re-run download_tools.bat or:
+    echo        pip install "PySide6>=6.8,<6.9"
     pause
     exit /b 1
   )

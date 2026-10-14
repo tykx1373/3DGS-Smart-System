@@ -204,7 +204,8 @@ python gui/quick_gui.py
 3DGS/
 ├── run.bat                     # 一键启动脚本（自动查找 vksplat Python 环境）
 ├── gui/
-│   ├── quick_gui.py            # 主 GUI（PySide6/Fluent，串联 COLMAP → VkSplat → VKGS）
+│   ├── quick_gui.py            # 主 GUI（纯 PySide6，串联 COLMAP → VkSplat → VKGS）
+│   ├── qt_theme.py             # Qt 样式表主题与轻量组件（原创，无第三方 UI 库）
 │   ├── pipeline_core.py        # 与界面无关的管线核心（COLMAP/训练/产物收取）
 │   ├── detect_gpu.py           # Vulkan 设备检测（独显/核显自动适配）
 │   └── quick_gui_config.json   # 工具路径配置（首次保存后生成）
@@ -291,10 +292,9 @@ A: GUI 底部有「运行日志」折叠按钮，点击即可展开实时日志�
 | [COLMAP](https://github.com/colmap/colmap) | 外部进程调用 | 稀疏重建（SfM/MVS） | BSD-3-Clause |
 | [VkSplat](https://github.com/harry7557558/vksplat) | 源码内置（`tools/vksplat/`） | 3DGS 训练后端（Vulkan） | Apache-2.0 |
 | [VKGS](https://github.com/nvpro-samples/vk_gaussian_splatting) | 外部进程调用 | 实时渲染查看器 | MIT |
-| [PySide6](https://www.qt.io/pyside) | Python 依赖 | GUI 框架（Qt 官方 Python 绑定） | LGPLv3 / 商业授权 |
-| [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets) | Python 依赖 | Fluent 风格组件库 | GPLv3 / 商业授权 |
+| [PySide6](https://www.qt.io/pyside) | Python 依赖 | GUI 框架（Qt 官方 Python 绑定，仅用原生控件 + 自写 QSS） | LGPLv3 |
 
-> 注意：PySide6-Fluent-Widgets 为 GPLv3，对外分发本程序时整体需符合 GPLv3；如需闭源分发，请购买其商业授权或替换为其他组件库。
+> 界面只用 PySide6 原生控件和项目自带的 `gui/qt_theme.py` 样式，不依赖 GPLv3 的第三方 UI 组件库；LGPLv3 以动态链接方式使用，允许闭源分发（保留许可证声明、允许用户替换 Qt 库即可）。
 
 各第三方工具的源代码请前往其各自仓库获取。
 

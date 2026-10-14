@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.join(ROOT, "gui"))
 try:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
-    import qfluentwidgets  # noqa: F401
     import pipeline_core as pc
     import quick_gui as qg
     _HAVE_QT = True

@@ -10,10 +10,10 @@ dependencies:
   - pip:
       - opencv-python-headless>=4.8
       - pillow>=10.0
-      # GUI（PySide6 + Fluent）；6.8 为经过验证的稳定线，
-      # 6.10+ 在部分 Windows 机器上出现 Qt6Core 加载失败。
+      # GUI 只用 PySide6 原生控件 + 自写 QSS（gui/qt_theme.py），
+      # LGPLv3 动态链接可自由分发；不引入 GPLv3 的第三方 UI 组件库。
+      # 6.8 为经过验证的稳定线，6.10+ 在部分 Windows 机器上 Qt6Core 加载失败。
       - PySide6>=6.8,<6.9
-      - PySide6-Fluent-Widgets>=1.7
       # torch (CPU-only), torchvision and torchmetrics are installed separately by
       # download_tools.ps1 to ensure the CPU wheels are used (no CUDA bloat).
       # torchvision is required by torchmetrics' LPIPS metric used in eval.
