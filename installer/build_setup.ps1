@@ -22,12 +22,20 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Single source of truth for the release version.
+# Drives: launcher exe version resource, ISCC /DMyAppVersion, output filename.
+$AppVersion = '2.0.0'
+
 $InstallerDir = $PSScriptRoot
 $RepoRoot = Resolve-Path (Join-Path $InstallerDir '..')
 $PyExe = Join-Path $RepoRoot 'env\vksplat\python.exe'
 $StagingExe = Join-Path $RepoRoot '3DGS-Studio.exe'
 $BuiltExe = Join-Path $InstallerDir 'dist\3DGS-Studio.exe'
 $SetupScript = Join-Path $InstallerDir 'setup.iss'
+$VersionTemplate = Join-Path $InstallerDir 'version_info.txt'
+$VersionGenerated = Join-Path $InstallerDir 'build_version_info.txt'
+$OutputExe = Join-Path $InstallerDir ("output\3DGS-Studio-windows-x64-Setup-{0}.exe" -f $AppVersion)
 
 Write-Host '== [1/4] Environment check ==' -ForegroundColor Cyan
 if (-not (Test-Path $PyExe)) { throw "Portable Python not found: $PyExe" }
@@ -51,6 +59,12 @@ if (-not $Iscc) {
 Write-Host "ISCC: $Iscc"
 
 try {
+    # Generate the PyInstaller version resource from the template (ASCII, no BOM)
+    $versionParts = ($AppVersion.Split('.') -join ', ')
+    $vt = Get-Content $VersionTemplate -Raw -Encoding ASCII
+    $vt = $vt.Replace('@APP_VERSION_PARTS@', $versionParts).Replace('@APP_VERSION@', $AppVersion)
+    [System.IO.File]::WriteAllText($VersionGenerated, $vt, [System.Text.Encoding]::ASCII)
+
     if ($SkipLauncherBuild) {
         Write-Host '== [2/4] Skipping launcher build (-SkipLauncherBuild) ==' -ForegroundColor Cyan
     } else {
@@ -69,20 +83,22 @@ try {
     Copy-Item $BuiltExe $StagingExe -Force
 
     Write-Host '== [4/4] Compiling with Inno Setup (~3 GB input, LZMA2, 10-40 min) ==' -ForegroundColor Cyan
-    & $Iscc $SetupScript
+    & $Iscc $SetupScript "/DMyAppVersion=$AppVersion"
     if ($LASTEXITCODE -ne 0) { throw "ISCC compilation failed (exit code $LASTEXITCODE)" }
 } finally {
     if (Test-Path $StagingExe) {
         Remove-Item $StagingExe -Force
         Write-Host 'Removed staged launcher copy from repo root' -ForegroundColor DarkGray
     }
+    if (Test-Path $VersionGenerated) {
+        Remove-Item $VersionGenerated -Force
+    }
 }
 
-$out = Join-Path $InstallerDir 'output\3DGS-Studio-Setup-2.0.0.exe'
-if (Test-Path $out) {
-    $mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
+if (Test-Path $OutputExe) {
+    $mb = [math]::Round((Get-Item $OutputExe).Length / 1MB, 1)
     Write-Host ''
-    Write-Host "Build succeeded: $out ($mb MB)" -ForegroundColor Green
+    Write-Host "Build succeeded: $OutputExe ($mb MB)" -ForegroundColor Green
 } else {
     throw 'Compilation finished but output file is missing'
 }

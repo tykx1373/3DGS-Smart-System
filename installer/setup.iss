@@ -1,10 +1,14 @@
-﻿; -*- coding: utf-8 -*-
+; -*- coding: utf-8 -*-
 ; 3DGS 快速管线 —— Inno Setup 安装脚本
 ; 构建：installer\build_setup.ps1（会先用 PyInstaller 生成根目录启动器）
 ; 或手动：iscc installer\setup.iss（需先把 3DGS-Studio.exe 放到仓库根）
 
 #define MyAppName "3DGS 快速管线"
-#define MyAppVersion "2.0.0"
+; 版本号单一来源是 build_setup.ps1 的 $AppVersion（通过 /DMyAppVersion= 传入）；
+; 直接用 ISCC 编译时用此处默认值
+#ifndef MyAppVersion
+  #define MyAppVersion "2.0.0"
+#endif
 #define MyAppPublisher "3DGS Studio"
 #define MyAppExeName "3DGS-Studio.exe"
 ; 打包源 = 仓库根（iss 在 installer\ 下）
@@ -27,13 +31,13 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir=output
-OutputBaseFilename=3DGS-Studio-Setup-2.0.0
+OutputBaseFilename=3DGS-Studio-windows-x64-Setup-{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
-VersionInfoVersion=2.0.0.0
+VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}

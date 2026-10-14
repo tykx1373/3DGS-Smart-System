@@ -465,5 +465,6 @@ notes/
 installer/build/
 installer/dist/
 installer/output/
+installer/build_version_info.txt
 
 

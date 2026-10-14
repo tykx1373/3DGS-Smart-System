@@ -1,0 +1,34 @@
+# -*- coding: utf-8 -*-
+# PyInstaller VSVersionInfo template for 3DGS-Studio.exe
+#
+# Placeholder @APP_VERSION@ (x.y.z form, e.g. 2.0.0) is replaced by
+# installer/build_setup.ps1 before running PyInstaller; the generated file is
+# build_version_info.txt (git-ignored). Do not point the spec at this template
+# directly: the placeholder would make the resource compiler fail.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(@APP_VERSION_PARTS@, 0),
+    prodvers=(@APP_VERSION_PARTS@, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        u'080404B0',
+        [StringStruct(u'CompanyName', u'3DGS Studio'),
+         StringStruct(u'FileDescription', u'3DGS Quick Pipeline Launcher'),
+         StringStruct(u'FileVersion', u'@APP_VERSION@.0'),
+         StringStruct(u'InternalName', u'3DGS-Studio'),
+         StringStruct(u'LegalCopyright', u'Copyright (C) 2026; Apache-2.0 own code, bundled LGPLv3 PySide6/Qt'),
+         StringStruct(u'OriginalFilename', u'3DGS-Studio.exe'),
+         StringStruct(u'ProductName', u'3DGS Quick Pipeline'),
+         StringStruct(u'ProductVersion', u'@APP_VERSION@.0')]),
+    ]),
+    VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
+  ]
+)

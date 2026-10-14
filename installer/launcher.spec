@@ -5,7 +5,15 @@
     env\\vksplat\\python.exe -m PyInstaller --clean --noconfirm installer\\launcher.spec
 产物：dist\\launcher\\3DGS-Studio.exe（onefile，约 10 MB）
 """
+import os
+
 block_cipher = None
+
+# 版本元数据由 build_setup.ps1 从 version_info.txt 模板生成；
+# 手动直接跑 PyInstaller 时该文件不存在，则不带版本资源（不影响功能）
+_version_file = 'build_version_info.txt'
+if not os.path.exists(_version_file):
+    _version_file = None
 
 a = Analysis(
     ['launcher.py'],
@@ -47,4 +55,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='app.ico',         # Fluent 风格应用图标（快捷方式/任务栏显示）
+    version=_version_file,  # exe 属性页的版本/产品信息（可为 None）
 )
