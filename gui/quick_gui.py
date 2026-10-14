@@ -101,18 +101,22 @@ class TrainPage(QWidget):
         # 步骤指示
         steps = QWidget()
         sl = QHBoxLayout(steps)
-        sl.setContentsMargins(0, 4, 0, 0)
+        sl.setContentsMargins(2, 6, 0, 2)
         self.step_labels = []
-        for num, title, sub in (("①", "选择照片", "选一个装照片的文件夹"),
-                                ("②", "生成 3D 模型", "电脑自动计算（几分钟~几十分钟）"),
-                                ("③", "查看结果", "自动打开 3D 查看器")):
+        for num, title, sub in (("1", "选择照片", "选一个装照片的文件夹"),
+                                ("2", "生成 3D 模型", "电脑自动计算（几分钟~几十分钟）"),
+                                ("3", "查看结果", "自动打开 3D 查看器")):
             c = QWidget()
             cl = QHBoxLayout(c)
-            n = QLabel(f"  {num}  ")
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(9)
+            n = QLabel(num)
+            n.setFixedSize(30, 30)
+            n.setAlignment(Qt.AlignCenter)
             t = QWidget()
             tl = QVBoxLayout(t)
             tl.setContentsMargins(0, 0, 0, 0)
-            tl.setSpacing(0)
+            tl.setSpacing(1)
             t1, t2 = QLabel(title), make_label(sub, "caption")
             tl.addWidget(t1)
             tl.addWidget(t2)
@@ -122,6 +126,7 @@ class TrainPage(QWidget):
             self.step_labels.append((n, t1, t2))
         sl.addStretch(1)
         root.addWidget(steps)
+        self.set_step_color(0)
 
         # 照片选择卡
         card = Card("选择照片")
@@ -228,11 +233,22 @@ class TrainPage(QWidget):
         root.addStretch(1)
 
     def set_step_color(self, n):
-        pending, active, done = "#9e9e9e", qt_theme.ACCENT, "#16a34a"
-        for i, labels in enumerate(self.step_labels):
-            color = pending if i + 1 > n else (active if i + 1 == n else done)
-            for w in labels:
-                w.setStyleSheet(f"color: {color}; background: transparent;")
+        """圆形步骤徽章：未开始灰边 / 当前蓝底白字 / 完成绿底白勾。"""
+        sub = qt_theme._PALETTES[qt_theme.current_scheme()]["subtext"]
+        styles = {
+            "pending": "border:2px solid #8a8a8a; border-radius:15px; color:#8a8a8a;",
+            "active": f"background:{qt_theme.ACCENT}; border-radius:15px; color:#ffffff; font-weight:700;",
+            "done": f"background:{qt_theme.GREEN_BRIGHT}; border-radius:15px; color:#ffffff;",
+        }
+        for i, (badge, t1, t2) in enumerate(self.step_labels):
+            state = "pending" if i + 1 > n else ("active" if i + 1 == n else "done")
+            badge.setStyleSheet(styles[state])
+            badge.setFont(QFont("Segoe UI Symbol", 11, QFont.Bold))
+            badge.setText("✓" if state == "done" else str(i + 1))
+            text_color = {"pending": "#8a8a8a", "active": qt_theme.ACCENT,
+                          "done": qt_theme.GREEN_BRIGHT}[state]
+            t1.setStyleSheet(f"color:{text_color}; font-weight:600; background:transparent;")
+            t2.setStyleSheet(f"color:{sub}; background:transparent;")
 
 
 # ============================================================== 历史模型页 ====
@@ -269,12 +285,15 @@ class HistoryPage(QWidget):
         self.table.setColumnCount(len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.horizontalHeader().setHighlightSections(False)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.table.doubleClicked.connect(lambda _i: self.open_selected())
-        self.table.horizontalHeader().setStretchLastSection(False)
         root.addWidget(self.table, 1)
         self.empty_lab = make_label("还没有训练成功的模型。", "caption")
         self.empty_lab.setVisible(False)
@@ -301,9 +320,21 @@ class HistoryPage(QWidget):
                 f"{it['size_mb']:.1f}",
             ]
             for c, v in enumerate(vals):
-                self.table.setItem(r, c, QTableWidgetItem(v))
-        for c, w in enumerate((150, 300, 70, 80, 80, 80, 80, 90)):
-            self.table.setColumnWidth(c, w)
+                item = QTableWidgetItem(v)
+                if c >= 4:  # 指标与大小列右对齐
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c == 1:  # 模型名可能被截断，悬浮显示全名
+                    item.setToolTip(it["name"])
+                self.table.setItem(r, c, item)
+        # 列宽：时间/档位/步数/指标/大小固定，模型名列吃剩余空间
+        from PySide6.QtWidgets import QHeaderView
+        header = self.table.horizontalHeader()
+        fixed = {0: 146, 2: 72, 3: 74, 4: 86, 5: 80, 6: 92, 7: 92}
+        for c, w in fixed.items():
+            header.resizeSection(c, w)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        for c in fixed:
+            header.setSectionResizeMode(c, QHeaderView.Fixed)
         self.empty_lab.setVisible(not self.items)
 
     def _selected_item(self):
@@ -640,11 +671,43 @@ class MainWindow(QMainWindow, PipelineCore):
         h = QHBoxLayout(central)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
+
+        # 侧栏：品牌区 + 导航
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(196)
+        sb = QVBoxLayout(sidebar)
+        sb.setContentsMargins(12, 18, 12, 12)
+        sb.setSpacing(6)
+        brand = QWidget()
+        bl = QHBoxLayout(brand)
+        bl.setContentsMargins(6, 0, 0, 0)
+        bl.setSpacing(10)
+        logo = QLabel("3D")
+        logo.setObjectName("logo")
+        logo.setFixedSize(36, 36)
+        logo.setAlignment(Qt.AlignCenter)
+        bl.addWidget(logo)
+        bt = QWidget()
+        btl = QVBoxLayout(bt)
+        btl.setContentsMargins(0, 0, 0, 0)
+        btl.setSpacing(1)
+        bn = QLabel("3DGS 快速管线")
+        bn.setObjectName("brandName")
+        bs = make_label("照片 → 3D 模型", "caption")
+        bs.setObjectName("brandSub")
+        btl.addWidget(bn)
+        btl.addWidget(bs)
+        bl.addWidget(bt, 1)
+        sb.addWidget(brand)
+        sb.addSpacing(10)
+
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
         self.nav.addItems(self.NAV)
-        self.nav.setFixedWidth(160)
         self.nav.setCurrentRow(0)
+        sb.addWidget(self.nav, 1)
+
         self.stack = QStackedWidget()
 
         self.train_page = TrainPage(self)
@@ -655,7 +718,7 @@ class MainWindow(QMainWindow, PipelineCore):
             self.stack.addWidget(p)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        h.addWidget(self.nav)
+        h.addWidget(sidebar)
         h.addWidget(self.stack, 1)
         self.setCentralWidget(central)
 
