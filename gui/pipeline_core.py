@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """与界面无关的 3DGS 管线核心：COLMAP 稀疏重建 → VkSplat 训练 → 收取产物。
 
-Tk（quick_gui.QuickSplatApp）与 Qt（quick_gui_qt）两个界面都继承 PipelineCore，
-管线逻辑只维护这一份。宿主界面需提供以下“接口”（鸭子类型，不强制继承）：
+quick_gui.MainWindow（PySide6/Fluent）继承 PipelineCore。
+
+宿主界面需提供以下“接口”（鸭子类型，不强制继承）：
 
   变量（get/set 即可，Tk Var 或 Qt 适配对象都行）:
     img_var, ws_var, quality_var, res_var, max_img_var, vs_steps_var,
@@ -569,7 +570,7 @@ class PipelineCore:
     def _scan_exif_rotations(src_dir, names):
         """返回带 EXIF 旋转标记（orientation != 1）的文件名集合。
 
-        只读元数据不解码像素，几百张图 1 秒内。Pillow 随 customtkinter 自带。
+        只读元数据不解码像素，几百张图 1 秒内。Pillow 在 environment.yaml 中显式声明。
         读不出 EXIF 的文件（或 Pillow 缺失）按无旋转处理——维持原行为。
         """
         try:

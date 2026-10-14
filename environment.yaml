@@ -9,9 +9,8 @@ dependencies:
   - tqdm>=4.65
   - pip:
       - opencv-python-headless>=4.8
-      - customtkinter>=5.2
       - pillow>=10.0
-      # Qt/Fluent 界面（quick_gui_qt.py）；6.8 为经过验证的稳定线，
+      # GUI（PySide6 + Fluent）；6.8 为经过验证的稳定线，
       # 6.10+ 在部分 Windows 机器上出现 Qt6Core 加载失败。
       - PySide6>=6.8,<6.9
       - PySide6-Fluent-Widgets>=1.7

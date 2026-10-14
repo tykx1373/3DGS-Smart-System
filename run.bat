@@ -50,18 +50,15 @@ exit /b 1
 :found
 echo [OK] Using Python: !PYEXE!
 
-REM ---- Check tkinter ----
-"!PYEXE!" -c "import tkinter" >nul 2>nul
+REM ---- Check PySide6 (GUI) ----
+"!PYEXE!" -c "import PySide6, qfluentwidgets" >nul 2>nul
 if errorlevel 1 (
-  echo [WARN] tkinter not found. Trying conda install...
-  for %%D in ("!PYEXE!") do set "CONDADIR=%%~dpD"
-  "!CONDADIR!..\condabin\conda.bat" install -y tk >nul 2>nul
+  echo [WARN] PySide6 / qfluentwidgets not found. Trying pip install...
+  "!PYEXE!" -m pip install "PySide6>=6.8,<6.9" PySide6-Fluent-Widgets
+  "!PYEXE!" -c "import PySide6, qfluentwidgets" >nul 2>nul
   if errorlevel 1 (
-    "!CONDADIR!..\Scripts\conda.exe" install -y tk >nul 2>nul
-  )
-  "!PYEXE!" -c "import tkinter" >nul 2>nul
-  if errorlevel 1 (
-    echo [FAIL] tkinter install failed. Run: conda install -n vksplat tk
+    echo [FAIL] GUI dependencies install failed. Re-run download_tools.bat or:
+    echo        pip install "PySide6>=6.8,<6.9" PySide6-Fluent-Widgets
     pause
     exit /b 1
   )

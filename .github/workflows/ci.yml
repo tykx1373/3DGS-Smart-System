@@ -13,8 +13,7 @@ concurrency:
 jobs:
   checks:
     # Windows-only project: the prebuilt .pyd files are win_amd64 and the
-    # installers are .bat/.ps1. The Windows runner also ships tkinter with the
-    # official Python build, so the GUI tests can actually run.
+    # installers are .bat/.ps1. GUI tests run Qt with the offscreen platform.
     # cp310 / cp311 are the two ABIs covered by the prebuilt vksplat .pyd
     # (see environment.yaml and syscheck.check_python).
     name: checks (Python ${{ matrix.python-version }})
@@ -34,7 +33,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip customtkinter
+        run: python -m pip install --upgrade pip "PySide6>=6.8,<6.9" PySide6-Fluent-Widgets pillow opencv-python-headless
 
       - name: Byte-compile Python sources
         # tools/vksplat/vksplat is not imported by the unit tests (torch/vksplat

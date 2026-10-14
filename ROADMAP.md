@@ -8,7 +8,7 @@
 - [x] Vulkan 训练后端集成（VkSplat，源码内置，无需 CUDA）
 - [x] COLMAP 稀疏重建（CUDA / noCUDA 双版本自动选择）
 - [x] VKGS 实时渲染查看器集成
-- [x] 中文 GUI（customtkinter），一键式管线
+- [x] 中文 GUI（PySide6 + Fluent），一键式管线
 - [x] 独显 / 核显自动适配（cap_max、图像缓存策略）
 - [x] 断点续训（每 1000 步自动保存，停止时精确保存）
 - [x] 实时训练进度（步数 / 剩余时间 / 高斯数量）
@@ -63,4 +63,4 @@
 
 - 集成 OpenSplat：与零 CUDA 依赖的定位冲突（依赖 libtorch + CUDA/ROCm）
 - 多卡训练：目标用户为低端 GPU 场景
-- GUI 重写为 C++/ImGui：当前 customtkinter 足够
+- GUI 重写为 C++/ImGui：当前 PySide6/Fluent 足够

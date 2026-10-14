@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""quick_gui 里可离线测试的部分：正则解析、配置读取、文件探测。
+"""pipeline_core 里可离线测试的部分：正则解析、配置读取、文件探测。
 
-不需要 GPU 和网络。涉及 Tk 窗口的那一组会在无法建立 Tk 时自动跳过。
+不需要 GPU、网络和 Qt 界面。界面层（PySide6）的测试见 test_qt_gui.py。
 """
 import json
 import os
@@ -13,7 +13,11 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "gui"))
 
-import quick_gui as q  # noqa: E402
+import pipeline_core as q  # noqa: E402
+
+# 测试里沿用旧名 QuickSplatApp 的构造方式（bare 方法测试），
+# 现在管线方法都在 PipelineCore 上。
+q.QuickSplatApp = q.PipelineCore
 
 
 class TestProgressParsing(unittest.TestCase):
@@ -165,87 +169,11 @@ class TestWorkspaceProbing(unittest.TestCase):
         self.assertEqual(self.app._count_images(""), 0)
 
 
-class _FakeVar:
-    """最小替身：只有 get()。用来在不建窗口的情况下测 _save_options。"""
-
-    def __init__(self, value=None, raises=False):
-        self._value, self._raises = value, raises
-
-    def get(self):
-        if self._raises:
-            raise ValueError("expected integer but got ''")
-        return self._value
-
-
-class TestSaveOptions(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="saveopts_")
-        self._orig = q.CONFIG_PATH
-        q.CONFIG_PATH = os.path.join(self.tmp, "cfg.json")
-
-    def tearDown(self):
-        q.CONFIG_PATH = self._orig
-
-    def _app(self, steps=9000, maximg=1600, steps_raises=False,
-             mcmc=True, run_eval=True, mask=""):
-        app = _bare_app()
-        app.cfg = {}
-        app.quality_var = _FakeVar("快速")
-        app.res_var = _FakeVar("1/2（images_2）")
-        app.lpips_dl_var = _FakeVar(True)
-        app.vs_steps_var = _FakeVar(None, raises=True) if steps_raises else _FakeVar(steps)
-        app.max_img_var = _FakeVar(maximg)
-        # 高级面板里的选项：真实 GUI 中由 _build_advanced_panel 创建
-        app.vs_mcmc_var = _FakeVar(mcmc)
-        app.run_eval_var = _FakeVar(run_eval)
-        app.mask_var = _FakeVar(mask)
-        return app
-
-    def _saved(self):
-        with open(q.CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f)
-
-    def test_writes_every_option(self):
-        self._app()._save_options()
-        saved = self._saved()
-        self.assertEqual(saved["quality"], "快速")
-        self.assertEqual(saved["res_choice"], "1/2（images_2）")
-        self.assertTrue(saved["lpips_download"])
-        self.assertEqual(saved["train_steps"], 9000)
-        self.assertEqual(saved["max_image_size"], 1600)
-        self.assertTrue(saved["vs_mcmc"])
-        self.assertTrue(saved["run_eval"])
-        self.assertEqual(saved["mask_dir"], "")
-
-    def test_writes_advanced_toggles_and_mask_path(self):
-        """取消 MCMC/评估、填入 Mask 路径时，非默认值也必须原样落盘。"""
-        self._app(mcmc=False, run_eval=False,
-                  mask=r"D:\tmp\masks  ")._save_options()
-        saved = self._saved()
-        self.assertFalse(saved["vs_mcmc"])
-        self.assertFalse(saved["run_eval"])
-        # 末尾空白要 strip 掉，避免把用户误输入的空格带进训练脚本路径
-        self.assertEqual(saved["mask_dir"], r"D:\tmp\masks")
-
-    def test_config_is_written_as_ascii(self):
-        """ensure_ascii=True：中文路径在部分环境下会被读错。"""
-        self._app()._save_options()
-        with open(q.CONFIG_PATH, "rb") as f:
-            f.read().decode("ascii")
-
-    def test_half_typed_value_is_skipped_without_corrupting_the_rest(self):
-        """输入框被清空时 get() 会抛错：那一次保存跳过，其余项照常写入。"""
-        self._app(steps_raises=True)._save_options()
-        saved = self._saved()
-        self.assertNotIn("train_steps", saved)
-        self.assertEqual(saved["max_image_size"], 1600)
-
-
 try:
     import cv2 as _cv2  # noqa: E402
     _HAVE_CV2 = True
 except ImportError:
-    _HAVE_CV2 = False  # CI 只装 customtkinter，不带 opencv；相关用例跳过
+    _HAVE_CV2 = False  # 未装 opencv 时相关用例跳过
 
 
 class TestExifOrientation(unittest.TestCase):
@@ -466,96 +394,6 @@ class TestHistoryModels(unittest.TestCase):
         ok, _ = q.delete_history_model(d, self.out)
         self.assertTrue(ok)
         self.assertFalse(os.path.exists(d))
-
-
-def _destroy_root(root):
-    """销毁窗口前取消挂起的 after 回调。
-
-    customtkinter 在建根时会排几个 after（update / _windows_set_titlebar_icon），
-    直接 destroy 会让它们变成“invalid command name ...”往 stderr 刷噪声。
-    """
-    try:
-        for aid in root.tk.call("after", "info"):
-            root.after_cancel(aid)
-    except Exception:
-        pass
-    try:
-        root.destroy()
-    except Exception:
-        pass
-
-
-def _tk_available():
-    try:
-        import customtkinter as ctk
-        root = ctk.CTk()
-        root.withdraw()
-        _destroy_root(root)
-        return True
-    except Exception:
-        return False
-
-
-@unittest.skipUnless(_tk_available(), "需要可用的 Tk 显示环境")
-class TestAppRestoresSettings(unittest.TestCase):
-    """本轮 bug：_build_ui 末尾无条件调用 _apply_quality_preset()，
-    把刚从配置恢复出来的训练步数覆盖成了档位默认值（7777 → 30000）。"""
-
-    def setUp(self):
-        # 用 ctk.CTk() 而不是 tkinter.Tk()：生产环境就是这个根，
-        # 纯 Tk 根上 CTk 控件会缺属性（block_update_dimensions_event）。
-        import customtkinter as ctk
-        self.tmp = tempfile.mkdtemp(prefix="cfg_restore_")
-        self._orig_cfg = q.CONFIG_PATH
-        q.CONFIG_PATH = os.path.join(self.tmp, "cfg.json")
-        with open(q.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({"quality": "高质量", "train_steps": 7777, "max_image_size": 2048,
-                       "res_choice": "1/4（images_4）", "lpips_download": True},
-                      f, ensure_ascii=False)
-        self.root = ctk.CTk()
-        self.root.withdraw()
-        self.app = q.QuickSplatApp(self.root)
-        self.root.update_idletasks()
-
-    def tearDown(self):
-        for win in (getattr(self.app, "adv_window", None),
-                    getattr(self.app, "log_window", None)):
-            try:
-                win.destroy()
-            except Exception:
-                pass
-        _destroy_root(self.root)
-        q.CONFIG_PATH = self._orig_cfg
-
-    def test_restored_values_survive_startup(self):
-        self.assertEqual(self.app.quality_var.get(), "高质量")
-        self.assertEqual(self.app.vs_steps_var.get(), 7777)
-        self.assertEqual(self.app.max_img_var.get(), 2048)
-        self.assertEqual(self.app.res_var.get(), "1/4（images_4）")
-        self.assertTrue(self.app.lpips_dl_var.get())
-
-    def test_quality_hint_is_filled_at_startup(self):
-        self.assertTrue(self.app.quality_hint.cget("text"))
-
-    def test_switching_quality_applies_its_default_steps(self):
-        self.app.quality_var.set("快速")
-        self.assertEqual(self.app.vs_steps_var.get(), q.QUALITY_PRESETS["快速"][0])
-
-    def test_changes_are_written_back(self):
-        self.app.max_img_var.set(1200)
-        self.app.vs_steps_var.set(9000)
-        with open(q.CONFIG_PATH, encoding="utf-8") as f:
-            saved = json.load(f)
-        self.assertEqual(saved["max_image_size"], 1200)
-        self.assertEqual(saved["train_steps"], 9000)
-
-    def test_no_duplicate_tooltip_texts(self):
-        """一行里的标签、输入框、浏览按钮会各自匹配到同一段说明文字。
-        以前没按文字去重，同一行会冒出两三个内容完全一样的「?」。"""
-        texts = [t.text for t in getattr(self.app, "_tips", [])]
-        self.assertTrue(texts, "应该挂上悬浮说明")
-        dupes = {t for t in texts if texts.count(t) > 1}
-        self.assertEqual(dupes, set(), f"同一段说明被挂了多次: {dupes}")
 
 
 if __name__ == "__main__":
