@@ -1,4 +1,4 @@
-; -*- coding: utf-8 -*-
+﻿; -*- coding: utf-8 -*-
 ; 3DGS 快速管线 —— Inno Setup 安装脚本
 ; 构建：installer\build_setup.ps1（会先用 PyInstaller 生成根目录启动器）
 ; 或手动：iscc installer\setup.iss（需先把 3DGS-Studio.exe 放到仓库根）
@@ -54,10 +54,13 @@ Name: "desktopicon"; Description: "在桌面创建快捷方式"; GroupDescriptio
 
 [Types]
 Name: "full"; Description: "完整安装（推荐）"
-Name: "compact"; Description: "精简安装（不含示例数据集）"
+Name: "compact"; Description: "精简安装（不含示例数据集与 CUDA 加速）"
 Name: "custom"; Description: "自定义安装"; Flags: iscustom
 
 [Components]
+; noCUDA 版 COLMAP 为必装基础组件（纯 CPU，所有显卡通用），不列为可选组件；
+; CUDA 版仅 NVIDIA 显卡可用，检测到 N 卡时默认勾选（见 [Code] IsNvidiaMachine）
+Name: "colmapcuda"; Description: "COLMAP CUDA 加速版（约 741 MB，仅 NVIDIA 显卡生效，特征提取更快）"; Types: full; Check: IsNvidiaMachine
 Name: "samples"; Description: "示例数据集 south-building（约 223 MB，装完可直接跑通完整流程）"; Types: full
 
 [Dirs]
@@ -83,9 +86,12 @@ Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: recursesubdirs createall
 
 ; ---- 应用代码与工具链 ----
 Source: "{#SrcRoot}gui\*"; DestDir: "{app}\gui"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "__pycache__,*.pyc,*.pyo,quick_gui_config.json"
-; tools 裁剪：COLMAP 测试程序/静态库、vksplat 的 C++/slang 源码与内置 web viewer、
+; tools 基础部分（含必装的 noCUDA 版 COLMAP）：排除可选的 CUDA 版目录，
+; 另排除 COLMAP 测试程序/静态库、vksplat 的 C++/slang 源码与内置 web viewer、
 ; cp311 双版本绑定（便携环境为 cp310）、VKGS 空日志
-Source: "{#SrcRoot}tools\*"; DestDir: "{app}\tools"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "__pycache__,*.pyc,*.pyo,*.pdb,*.lib,*_test.exe,*.log,RUN_TESTS.bat,vksplat\vksplat\src,vksplat\vksplat\slang,vksplat\vksplat\viewer,*.cp311-win_amd64.pyd,log_vk_gaussian_splatting.txt"
+Source: "{#SrcRoot}tools\*"; DestDir: "{app}\tools"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "__pycache__,*.pyc,*.pyo,*.pdb,*.lib,*_test.exe,*.log,RUN_TESTS.bat,vksplat\vksplat\src,vksplat\vksplat\slang,vksplat\vksplat\viewer,*.cp311-win_amd64.pyd,log_vk_gaussian_splatting.txt,colmap-x64-windows-cuda"
+; 可选：COLMAP CUDA 加速版（仅 colmapcuda 组件选中时安装）
+Source: "{#SrcRoot}tools\colmap-x64-windows-cuda\*"; DestDir: "{app}\tools\colmap-x64-windows-cuda"; Flags: recursesubdirs createallsubdirs ignoreversion; Components: colmapcuda; Excludes: "__pycache__,*.pyc,*.pyo,*.pdb,*.lib,*_test.exe,*.log,RUN_TESTS.bat"
 Source: "{#SrcRoot}sample\*"; DestDir: "{app}\sample"; Flags: recursesubdirs createallsubdirs ignoreversion; Components: samples
 
 ; ---- 便携 conda 环境 ----
@@ -124,7 +130,8 @@ Type: filesandordirs; Name: "{app}\docs"
 
 [UninstallDelete]
 ; 程序目录在运行中会生成 __pycache__ 字节码、.syscheck.json 等清单外文件，
-; 卸载时一并清扫；workspaces / outputs / logs 是用户数据，绝不在此列出。
+; 卸载时一并清扫；workspaces / outputs / logs 是用户数据，不在此列出，
+; 改由 [Code] 段在卸载向导中询问用户后决定是否删除。
 Type: files; Name: "{app}\.syscheck.json"
 Type: filesandordirs; Name: "{app}\env"
 Type: filesandordirs; Name: "{app}\gui"
@@ -133,3 +140,78 @@ Type: filesandordirs; Name: "{app}\docs"
 Type: filesandordirs; Name: "{app}\tests"
 Type: filesandordirs; Name: "{app}\sample"
 Type: filesandordirs; Name: "{app}\licenses"
+
+[Code]
+var
+  DeleteUserData: Boolean;
+
+// 安装时检测是否有 NVIDIA 显卡：有则默认勾选 COLMAP CUDA 加速组件。
+// 查询失败按 false 处理（noCUDA 版必装，任何机器都能正常使用）。
+function IsNvidiaMachine: Boolean;
+var
+  Locator, Service, GPUs, GPU: Variant;
+  I: Integer;
+  GpuName: String;
+begin
+  Result := False;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\cimv2');
+    GPUs := Service.ExecQuery('SELECT Name FROM Win32_VideoController');
+    for I := 0 to GPUs.Count - 1 do
+    begin
+      GPU := GPUs.ItemIndex(I);
+      GpuName := GPU.Name;
+      if Pos('NVIDIA', Uppercase(GpuName)) > 0 then
+        Result := True;
+    end;
+  except
+    Result := False;
+  end;
+end;
+
+function CmdLineHasParam(const ParamName: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), ParamName) = 0 then
+      Result := True;
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  Res: Integer;
+  Msg: String;
+begin
+  Result := True;
+  // 静默卸载默认保留数据；显式传 /DELETEUSERDATA 时才删除
+  DeleteUserData := CmdLineHasParam('/DELETEUSERDATA');
+  if not UninstallSilent then
+  begin
+    Msg := '卸载将删除程序文件。是否同时删除你的工作数据？' #13#10 #13#10
+         + '  workspaces  工作区（照片与项目中间结果）' #13#10
+         + '  outputs     训练生成的 3D 模型（PLY 等）' #13#10
+         + '  logs        运行日志' #13#10 #13#10
+         + '「是」：永久删除上述数据，无法恢复；' #13#10
+         + '「否」：保留数据（默认），仅卸载程序；' #13#10
+         + '「取消」：不卸载。';
+    Res := MsgBox(Msg, mbConfirmation, MB_YESNOCANCEL or MB_DEFBUTTON2);
+    if Res = IDCANCEL then
+      Result := False
+    else
+      DeleteUserData := (Res = IDYES);
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  // usPostUninstall：程序文件删除之后再清用户数据，避免误删正在使用的文件
+  if (CurUninstallStep = usPostUninstall) and DeleteUserData then
+  begin
+    DelTree(ExpandConstant('{app}\workspaces'), True, True, True);
+    DelTree(ExpandConstant('{app}\outputs'), True, True, True);
+    DelTree(ExpandConstant('{app}\logs'), True, True, True);
+  end;
+end;
