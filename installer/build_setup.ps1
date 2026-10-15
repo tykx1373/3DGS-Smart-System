@@ -25,7 +25,7 @@ $ErrorActionPreference = 'Stop'
 
 # Single source of truth for the release version.
 # Drives: launcher exe version resource, ISCC /DMyAppVersion, output filename.
-$AppVersion = '2.0.0'
+$AppVersion = '2.1.0'
 
 $InstallerDir = $PSScriptRoot
 $RepoRoot = Resolve-Path (Join-Path $InstallerDir '..')
