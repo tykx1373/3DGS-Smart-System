@@ -8,7 +8,7 @@ quick_gui.MainWindow（PySide6/Fluent）继承 PipelineCore。
   变量（get/set 即可，Tk Var 或 Qt 适配对象都行）:
     img_var, ws_var, quality_var, res_var, max_img_var, vs_steps_var,
     vs_cache_var, vs_mcmc_var, run_eval_var, mask_var, lpips_dl_var,
-    vksplat_py_var, colmap_var, vkgs_var
+    exposure_fix_var, export_splat_var, vksplat_py_var, colmap_var, vkgs_var
   回调（核心可能在工作线程调用，宿主自己负责线程封送）:
     _log(text), set_status(text), set_step(n), set_running(running, indeterminate),
     set_progress(frac, detail), set_workspace(path), show_eval(mean)
@@ -107,6 +107,8 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 # 而 cv2 / stb_image 不会：手机竖拍照片（orientation=6/8）若不预旋转，
 # 训练图与位姿差 90°，模型直接训废。marker 用于让旧的无纠偏副本自动失效重建。
 EXIF_MARKER = ".orientation_fixed"
+# 曝光校正副本的标记：开启校正后旧的未校正副本据此自动失效重建
+EXPOSURE_MARKER = ".exposure_matched"
 
 # 质量档位 -> (训练步数, 说明)。档位只给默认值，步数/分辨率都能在高级选项里覆盖。
 QUALITY_PRESETS = {
@@ -605,13 +607,16 @@ class PipelineCore:
             import numpy as np
             return cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
 
-    def _make_downscaled(self, dst_dir, src_dir, factor, rotated_names=None):
+    def _make_downscaled(self, dst_dir, src_dir, factor, rotated_names=None,
+                         exposure_fix=False):
         """把 src_dir 的图片按 1/factor 缩放后写入 dst_dir，文件名保持不变
         （COLMAP 的 images.bin 按文件名索引，改名就找不到图了）。
 
         先写 .tmp 再整体替换到位——若旧目录其实是个指向原图的联接，
         直接往里写就会覆盖用户的原图。factor=1 表示只纠偏不缩放
-        （高质量档的“方向归一化原图副本”）。
+        （高质量档的“方向归一化原图副本”）。exposure_fix=True 时额外做
+        曝光校正：以“中间曝光”那张照片为参照，其余逐通道直方图匹配，
+        统一明暗（VkSplat 不支持曝光补偿，照片明暗不一会训出色差）。
         """
         import cv2
         import numpy as np
@@ -623,19 +628,47 @@ class PipelineCore:
 
         rotated_names = rotated_names or set()
         has_marker = os.path.isfile(os.path.join(dst_dir, EXIF_MARKER))
+        has_exp_marker = os.path.isfile(os.path.join(dst_dir, EXPOSURE_MARKER))
         need_exif = bool(rotated_names)
 
-        # 已是普通目录且张数对得上 → 上次生成过，直接用。但若这次检测到
-        # 旋转标记而旧副本没有纠偏标记，说明旧副本方向是错的，必须重建。
+        # 已是普通目录且张数对得上 → 上次生成过，直接用。但：
+        # ① 这次检测到旋转标记而旧副本没有纠偏标记，方向是错的，重建；
+        # ② 开了曝光校正而旧副本没有校正标记，重建。
         if os.path.isdir(dst_dir) and not self._is_reparse(dst_dir):
-            stale = need_exif and not has_marker
+            stale = ((need_exif and not has_marker)
+                     or (exposure_fix and not has_exp_marker))
             have = [n for n in os.listdir(dst_dir) if n.lower().endswith(IMAGE_EXTS)]
             if not stale and len(have) == len(names):
                 self._log(f"[INFO] {os.path.basename(dst_dir)} 已存在（{len(names)} 张），跳过生成")
                 return True
             if stale:
-                self._log(f"[WARN] {os.path.basename(dst_dir)} 是无 EXIF 纠偏的旧副本，"
-                          f"将重新生成以纠正方向")
+                self._log(f"[WARN] {os.path.basename(dst_dir)} 是旧副本（缺少纠偏/曝光标记），"
+                          f"将重新生成")
+
+        # 曝光校正参照：用 1/8 缩略图统计每张的亮度，取“中间曝光”那张
+        # 作为参照并记录其三通道直方图（缩略图的直方图足以代表全图分布）
+        ref_name, ref_hists = None, None
+        if exposure_fix and len(names) > 1:
+            lums, hists = {}, {}
+            for name in names:
+                try:
+                    with open(os.path.join(src_dir, name), "rb") as f:
+                        buf = np.frombuffer(f.read(), dtype=np.uint8)
+                    small = cv2.imdecode(buf, cv2.IMREAD_REDUCED_COLOR_8)
+                    if small is None:
+                        continue
+                    lums[name] = float(small.mean())
+                    hists[name] = [cv2.calcHist([small], [c], None, [256],
+                                                 [0, 256]).ravel() for c in range(3)]
+                except Exception:
+                    continue
+            if lums:
+                ref_name = sorted(lums, key=lums.get)[len(lums) // 2]
+                ref_hists = hists[ref_name]
+                self._log(f"[INFO] 曝光校正：以 {ref_name}（中间曝光）为参照，"
+                          f"{len(lums)} 张照片将统一明暗")
+            else:
+                self._log("[WARN] 曝光校正：读不出任何照片统计，跳过校正")
 
         tmp_dir = dst_dir + ".tmp"
         if os.path.exists(tmp_dir):
@@ -643,6 +676,7 @@ class PipelineCore:
         os.makedirs(tmp_dir, exist_ok=True)
 
         fixed = 0
+        matched = 0
         done = 0
         for name in names:
             try:
@@ -655,6 +689,17 @@ class PipelineCore:
                     im = cv2.imdecode(buf, cv2.IMREAD_COLOR)
                 if im is None:
                     continue
+                # 曝光校正：当前图逐通道 CDF 对齐到参照图 CDF（查表实现）
+                if ref_hists is not None and name != ref_name:
+                    for c in range(3):
+                        s = cv2.calcHist([im], [c], None, [256], [0, 256]).ravel()
+                        s = np.cumsum(s)
+                        s = s / max(s[-1], 1.0)
+                        r = np.cumsum(ref_hists[c])
+                        r = r / max(r[-1], 1.0)
+                        lut = np.clip(np.searchsorted(r, s), 0, 255).astype(np.uint8)
+                        im[:, :, c] = lut[im[:, :, c]]
+                    matched += 1
                 h, w = im.shape[:2]
                 if factor > 1:
                     im = cv2.resize(im, (max(1, w // factor), max(1, h // factor)),
@@ -689,7 +734,14 @@ class PipelineCore:
                     f.write("exif orientation fixed\n")
             except Exception:
                 pass
+        if ref_hists is not None:
+            try:
+                with open(os.path.join(dst_dir, EXPOSURE_MARKER), "w") as f:
+                    f.write("exposure matched\n")
+            except Exception:
+                pass
         detail = f"，其中 {fixed} 张已按 EXIF 纠正方向" if fixed else ""
+        detail += f"，{matched} 张已统一曝光" if matched else ""
         self._log(f"[OK] 已生成 {os.path.basename(dst_dir)}"
                   f"{'（原分辨率，仅纠偏）' if factor == 1 else f'（1/{factor} 分辨率）'}，"
                   f"共 {done} 张{detail}")
@@ -785,6 +837,38 @@ if __name__ == "__main__":
             return "nvidia" in (result.stdout or "").lower()
         except Exception:
             return False
+
+    def _detect_vram_mb(self):
+        """读取独显专用显存（MB），读不到返回 None。
+
+        NVIDIA 用 nvidia-smi 精确读取；其他显卡退回 CIM AdapterRAM——
+        它是 uint32，8GB 以上会回绕成 4GB 左右，因此非 N 卡最多只能
+        判到“约 4GB”，宁可保守降分辨率也不冒显存不足的风险。
+        """
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10)
+            if out.returncode == 0:
+                vals = [int(t) for t in (out.stdout or "").replace(",", " ").split()
+                        if t.strip().isdigit()]
+                if vals:
+                    return max(vals)
+        except Exception:
+            pass
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "(Get-CimInstance Win32_VideoController | "
+                 "Measure-Object -Property AdapterRAM -Maximum).Maximum"],
+                capture_output=True, text=True, timeout=15)
+            s = (out.stdout or "").strip()
+            if s.isdigit() and int(s) > 0:
+                return int(s) // (1024 * 1024)
+        except Exception:
+            pass
+        return None
 
     def _run_colmap(self, img_dir, ws_dir):
         colmap_path = resolve_path(self.colmap_var.get().strip())
@@ -908,9 +992,26 @@ if __name__ == "__main__":
         device_id, is_integrated, gpu_name = self._detect_gpu(vksp_py)
         quality = self.quality_var.get()
         cap_map = {"快速": 200000, "标准": 400000, "高质量": 800000}
-        # 档位给默认值；高级选项里的「图像分辨率」可单独覆盖
-        res_dir = RES_DIR_MAP.get(self.res_var.get()) or \
-            RES_DEFAULT_BY_QUALITY.get(quality, "images_2")
+        # 档位给默认值；高级选项里的「图像分辨率」可单独覆盖。
+        # 用户手动选了分辨率 → 完全尊重；跟随档位 → 按显存自适应：
+        # 核显共享内存、独显 <8GB 时强制降半档，避免显存不足训练崩溃。
+        res_dir = RES_DIR_MAP.get(self.res_var.get())
+        auto_res = res_dir is None
+        if auto_res:
+            res_dir = RES_DEFAULT_BY_QUALITY.get(quality, "images_2")
+            if res_dir == "images":
+                if is_integrated:
+                    res_dir = "images_2"
+                    self._log("[INFO] 核显共享内存：自动使用 1/2 分辨率"
+                              "（可在高级选项手动改回）。")
+                else:
+                    vram_mb = self._detect_vram_mb()
+                    if vram_mb is not None and vram_mb < 7500:
+                        res_dir = "images_2"
+                        self._log(f"[INFO] 检测到显存约 {vram_mb // 1024} GB（不足 8GB）："
+                                  f"自动使用 1/2 分辨率（可在高级选项手动改回）。")
+                    elif vram_mb is not None:
+                        self._log(f"[INFO] 显存 {vram_mb // 1024} GB：使用原分辨率训练。")
         base_cap = cap_map.get(quality, 400000)
 
         # EXIF 方向检查：COLMAP 会应用 EXIF 旋转，而 cv2 / stb_image 不会。
@@ -922,20 +1023,25 @@ if __name__ == "__main__":
                 self._log(f"[INFO] 检测到 {len(rotated)} 张带旋转标记（EXIF）的照片，"
                           f"副本将自动纠正方向")
 
-        # 降采样副本幂等生成；旧版本 images_2/images_4 联接原图的工作区也会在此修好
+        # 降采样副本幂等生成；旧版本 images_2/images_4 联接原图的工作区也会在此修好。
+        # 曝光校正在生成副本时一并完成（直方图匹配到中间曝光），绝不动用户原图。
+        exp_fix = bool(self.exposure_fix_var.get())
+        if exp_fix:
+            self._log("[INFO] 曝光校正已开启：训练图将统一明暗后再训练。")
         if res_dir != "images":
             src_images = os.path.join(ws_dir, "images")
             src_images = os.path.realpath(src_images) if os.path.isdir(src_images) else img_dir
             if os.path.isdir(src_images):
                 self._make_downscaled(os.path.join(ws_dir, res_dir), src_images,
                                       2 if res_dir == "images_2" else 4,
-                                      rotated_names=rotated)
-        elif rotated:
-            # 高质量档：vksplat 用 stb_image 读图不认 EXIF，把 junction 换成
-            # 方向归一化的原分辨率副本；COLMAP 读这份也正确。
+                                      rotated_names=rotated, exposure_fix=exp_fix)
+        elif rotated or exp_fix:
+            # 高质量档（或开了曝光校正）：vksplat 用 stb_image 读图不认 EXIF，
+            # 把 junction 换成方向归一化的原分辨率副本；COLMAP 读这份也正确。
             images_link = os.path.join(ws_dir, "images")
             if os.path.isdir(images_link):
-                self._make_downscaled(images_link, img_dir, 1, rotated_names=rotated)
+                self._make_downscaled(images_link, img_dir, 1,
+                                      rotated_names=rotated, exposure_fix=exp_fix)
 
         if gpu_name == "unknown":
             cap_max = base_cap
@@ -1074,6 +1180,8 @@ if __name__ == "__main__":
             if os.path.exists(ply_path):
                 shutil.copy2(ply_path, output_ply)
                 self._log(f"[OK] 已将 PLY 复制到: {output_ply}")
+                if self.export_splat_var.get():
+                    self._export_splat(output_ply)
                 self._report_eval(os.path.join(target, "eval.json"))
                 return True
 
@@ -1091,8 +1199,96 @@ if __name__ == "__main__":
             if newest_ply:
                 shutil.copy2(newest_ply, output_ply)
                 self._log(f"[OK] 已将最新 PLY 复制到: {output_ply}")
+                if self.export_splat_var.get():
+                    self._export_splat(output_ply)
                 self._report_eval(os.path.join(os.path.dirname(newest_ply), "eval.json"))
         return True
+
+    def _export_splat(self, ply_path):
+        """PLY → .splat（antimatter15 网页查看器格式），体积约为 PLY 的 1/10。
+
+        每个高斯 32 字节：位置 3×float32 + 尺度 3×float32（保持 log 值，
+        查看器自己 exp）+ RGBA 4×uint8（颜色由 SH 直流项算出、不透明度
+        sigmoid 后量化）+ 旋转四元数 4×uint8（归一化后 ×128+128）。
+        只保留 DC 颜色、丢弃高阶 SH，因此只适合预览分享，训练产物仍是 PLY。
+        """
+        splat_path = os.path.splitext(ply_path)[0] + ".splat"
+        try:
+            import numpy as np
+            with open(ply_path, "rb") as f:
+                header_lines = []
+                while True:
+                    line = f.readline()
+                    if not line:
+                        raise ValueError("PLY 头部不完整")
+                    header_lines.append(line)
+                    if line.strip() == b"end_header":
+                        break
+                n_vert, props, little_endian = None, [], True
+                for line in header_lines:
+                    parts = line.decode("ascii", "replace").split()
+                    if not parts:
+                        continue
+                    if parts[0] == "format":
+                        little_endian = "binary_little_endian" in parts
+                    elif parts[0] == "element" and len(parts) >= 3 and parts[1] == "vertex":
+                        n_vert = int(parts[2])
+                    elif parts[0] == "property" and len(parts) >= 3 and parts[1] == "float":
+                        props.append(parts[2])
+                if n_vert is None or not props:
+                    raise ValueError("PLY 头部缺少 vertex/property")
+                if not little_endian:
+                    raise ValueError("仅支持 binary_little_endian PLY")
+                idx = {p: i for i, p in enumerate(props)}
+                need = ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                        "scale_0", "scale_1", "scale_2",
+                        "rot_0", "rot_1", "rot_2", "rot_3")
+                if any(k not in idx for k in need):
+                    raise ValueError("PLY 缺少必要字段（非 3DGS 布局？）")
+                # 循环结束后文件位置恰好在 end_header 之后，直接读顶点数据
+                data = np.frombuffer(f.read(), dtype="<f4",
+                                     count=n_vert * len(props)).reshape(n_vert, len(props))
+
+            # 中断/半成品模型可能带 NaN 高斯（训练坏点），剔除以免渲染成噪点
+            need_cols = [idx[k] for k in need]
+            finite = np.isfinite(data[:, need_cols]).all(axis=1)
+            if not finite.all():
+                skipped = int((~finite).sum())
+                data = data[finite]
+                n_vert = len(data)
+                self._log(f"[INFO] .splat 导出已剔除 {skipped} 个异常（NaN）高斯")
+
+            sh_c0 = 0.28209479177387814  # 1/(2*sqrt(pi))，SH 直流项系数
+            rgb = np.clip(0.5 + sh_c0 * data[:, [idx["f_dc_0"], idx["f_dc_1"],
+                                                  idx["f_dc_2"]]], 0.0, 1.0)
+            alpha = np.clip(1.0 / (1.0 + np.exp(-data[:, idx["opacity"]])), 0.0, 1.0)
+            color = np.empty((n_vert, 4), dtype=np.uint8)
+            color[:, :3] = (rgb * 255.0 + 0.5).astype(np.uint8)
+            color[:, 3] = (alpha * 255.0 + 0.5).astype(np.uint8)
+            rot = data[:, [idx["rot_0"], idx["rot_1"], idx["rot_2"], idx["rot_3"]]]
+            rot = rot / np.maximum(np.linalg.norm(rot, axis=1, keepdims=True), 1e-8)
+            rotq = np.clip(rot * 128.0 + 128.0, 0, 255).astype(np.uint8)
+
+            rec = np.zeros(n_vert, dtype=np.dtype([
+                ("pos", "<f4", (3,)), ("scale", "<f4", (3,)),
+                ("color", "u1", (4,)), ("rot", "u1", (4,))]))
+            rec["pos"] = data[:, [idx["x"], idx["y"], idx["z"]]]
+            rec["scale"] = data[:, [idx["scale_0"], idx["scale_1"], idx["scale_2"]]]
+            rec["color"] = color
+            rec["rot"] = rotq
+            with open(splat_path, "wb") as f:
+                f.write(rec.tobytes())
+
+            ply_mb = os.path.getsize(ply_path) / 2**20
+            splat_mb = os.path.getsize(splat_path) / 2**20
+            pct = splat_mb / ply_mb * 100 if ply_mb else 100.0
+            self._log(f"[OK] 已导出 .splat: {splat_path}"
+                      f"（{splat_mb:.1f} MB，为 PLY 的 {pct:.0f}%，"
+                      f"可直接拖进网页查看器分享）")
+            return splat_path
+        except Exception as e:
+            self._log(f"[WARN] .splat 导出失败（不影响 PLY）: {e}")
+            return None
 
     def _report_eval(self, eval_json_path):
         """训练收取完成后汇报质量指标：写日志 + 弹窗（宿主负责跨线程封送）。"""

@@ -192,6 +192,24 @@ class TrainPage(QWidget):
         ol.addWidget(win.lpips_chk)
         ol.addStretch(1)
         card.body_layout.addWidget(optrow)
+
+        optrow2 = QWidget()
+        ol2 = QHBoxLayout(optrow2)
+        ol2.setContentsMargins(0, 0, 0, 0)
+        win.exposure_chk = QCheckBox("曝光校正（照片明暗不一时）")
+        win.exposure_chk.setToolTip(
+            "勾选：把所有照片的曝光统一匹配到中间值，\n"
+            "减轻拍照时明暗不一致导致的重建色差/闪烁。\n"
+            "曝光本来就一致的照片无需勾选；只处理训练副本，不动原图。")
+        ol2.addWidget(win.exposure_chk)
+        win.splat_chk = QCheckBox("训练后同时导出 .splat（体积约 1/10）")
+        win.splat_chk.setToolTip(
+            "勾选：训练完成后在 PLY 旁额外生成同名 .splat 文件，\n"
+            "体积约为 PLY 的 1/10，可直接拖进 antimatter15/splat 等\n"
+            "网页查看器分享。只保留基础颜色，细节仍以 PLY 为准。")
+        ol2.addWidget(win.splat_chk)
+        ol2.addStretch(1)
+        card.body_layout.addWidget(optrow2)
         root.addWidget(card)
 
         # 操作按钮
@@ -412,7 +430,8 @@ class SettingsPage(QWidget):
         rl.addWidget(self._lab("图像分辨率："))
         win.res_combo = QComboBox()
         win.res_combo.addItems([RES_AUTO] + list(RES_DIR_MAP))
-        win.res_combo.setToolTip("训练图像尺寸；跟随档位＝快速 1/4、标准 1/2、高质量原图。")
+        win.res_combo.setToolTip("训练图像尺寸；跟随档位＝快速 1/4、标准 1/2、高质量原图，\n"
+                                 "并按显存自动降档（核显/不足 8GB 的独显最高 1/2，防显存溢出）。")
         rl.addWidget(win.res_combo)
         rl.addStretch(1)
         card.body_layout.addWidget(row)
@@ -742,6 +761,8 @@ class MainWindow(QMainWindow, PipelineCore):
         self.run_eval_var = Var(bool(self.cfg.get("run_eval", True)))
         self.mask_var = Var(str(self.cfg.get("mask_dir", "") or ""))
         self.lpips_dl_var = Var(bool(self.cfg.get("lpips_download", False)))
+        self.exposure_fix_var = Var(bool(self.cfg.get("exposure_fix", False)))
+        self.export_splat_var = Var(bool(self.cfg.get("export_splat", False)))
         self.colmap_var = Var(self.cfg.get("colmap_path", DEFAULT_COLMAP))
         self.vkgs_var = Var(self.cfg.get("vkgs_exe", DEFAULT_VKGS))
         self.vksplat_py_var = Var(self.cfg.get("vksplat_python", DEFAULT_VKSPLAT_PY))
@@ -754,6 +775,8 @@ class MainWindow(QMainWindow, PipelineCore):
         self.mcmc_chk.setChecked(bool(self.vs_mcmc_var.get()))
         self.eval_chk.setChecked(bool(self.run_eval_var.get()))
         self.lpips_chk.setChecked(bool(self.lpips_dl_var.get()))
+        self.exposure_chk.setChecked(bool(self.exposure_fix_var.get()))
+        self.splat_chk.setChecked(bool(self.export_splat_var.get()))
         self.cache_combo.setCurrentText(str(self.vs_cache_var.get()))
         idx = self.res_combo.findText(str(self.res_var.get()))
         self.res_combo.setCurrentIndex(max(0, idx))
@@ -776,6 +799,10 @@ class MainWindow(QMainWindow, PipelineCore):
         self.mcmc_chk.toggled.connect(lambda v: (self.vs_mcmc_var.set(v), self.save_options()))
         self.eval_chk.toggled.connect(lambda v: (self.run_eval_var.set(v), self.save_options()))
         self.lpips_chk.toggled.connect(lambda v: (self.lpips_dl_var.set(v), self.save_options()))
+        self.exposure_chk.toggled.connect(
+            lambda v: (self.exposure_fix_var.set(v), self.save_options()))
+        self.splat_chk.toggled.connect(
+            lambda v: (self.export_splat_var.set(v), self.save_options()))
         self.cache_combo.currentTextChanged.connect(
             lambda v: (self.vs_cache_var.set(v), self.save_options()))
         self.res_combo.currentTextChanged.connect(
@@ -803,6 +830,8 @@ class MainWindow(QMainWindow, PipelineCore):
             "quality": self.quality_var.get(),
             "res_choice": self.res_var.get(),
             "lpips_download": bool(self.lpips_dl_var.get()),
+            "exposure_fix": bool(self.exposure_fix_var.get()),
+            "export_splat": bool(self.export_splat_var.get()),
             "train_steps": int(self.vs_steps_var.get()),
             "max_image_size": int(self.max_img_var.get()),
             "vs_mcmc": bool(self.vs_mcmc_var.get()),
