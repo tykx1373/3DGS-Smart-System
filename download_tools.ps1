@@ -288,17 +288,57 @@ function Install-Colmap($pattern, $targetDirName, $label) {
         if (-not (Download-File $asset.browser_download_url $zipPath $asset.size)) { return $false }
     }
 
+    # Snapshot existing entries BEFORE extraction. The layout logic below may
+    # only touch entries created by this extraction; a previous build matched
+    # the pre-existing other-variant folder and renamed it (note "nocuda"
+    # contains the substring "cuda", so test "nocuda" first).
+    $wantNoCuda = $pattern -match "nocuda"
+    $word = if ($wantNoCuda) { "nocuda" } else { "cuda" }
+    $otherWord = if ($wantNoCuda) { "cuda" } else { "nocuda" }
+    $before = @{}
+    Get-ChildItem $toolsDir -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { $before[$_.Name] = $true }
+
     if (-not (Extract-Zip $zipPath $toolsDir)) {
         Write-Host "  Keep zip for retry: $zipPath" -ForegroundColor Yellow
         return $false
     }
 
-    # Match extracted dir by pattern (cuda/nocuda) to avoid mismatching
-    $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match $pattern } | Select-Object -First 1
+    # Clean up zip after successful extraction (it is a "new entry" too, so
+    # remove it before diffing against the pre-extraction snapshot)
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+
+    # Case 1: normal zip with a versioned top-level folder, e.g.
+    # colmap-x64-windows-nocuda/. Only consider newly created directories.
+    $extracted = Get-ChildItem $toolsDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { (-not $before.Contains($_.Name)) -and ($_.Name -match $word) } |
+        Select-Object -First 1
+
+    # Case 2: flat zip with no top-level folder (COLMAP 4.2.x noCUDA): the
+    # archive contains COLMAP.bat / bin / plugins at its root, so they land
+    # directly in toolsDir. Move the known COLMAP entries into the target dir.
+    if (-not $extracted -and (Test-Path (Join-Path $toolsDir "COLMAP.bat")) -and
+        (-not $before.Contains("COLMAP.bat"))) {
+        if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+        foreach ($entryName in @("COLMAP.bat", "RUN_TESTS.bat", "bin", "plugins", "lib", "share")) {
+            $entryPath = Join-Path $toolsDir $entryName
+            if ((Test-Path $entryPath) -and (-not $before.Contains($entryName))) {
+                Move-Item $entryPath (Join-Path $targetDir $entryName) -Force
+            }
+        }
+        $extracted = Get-Item $targetDir
+        Write-Host "  Collected flat-zip entries into '$targetDirName'" -ForegroundColor DarkGray
+    }
+
+    # Case 3: last-resort fuzzy match, still restricted to NEW directories and
+    # never matching the other variant (whose folder pre-existed anyway).
     if (-not $extracted) {
-        # Fallback: match any colmap dir that doesn't match the other version
-        $otherPattern = if ($pattern -match "cuda") { "nocuda" } else { "cuda" }
-        $extracted = Get-ChildItem $toolsDir -Directory | Where-Object { $_.Name -match "colmap" -and $_.Name -notmatch $otherPattern } | Select-Object -First 1
+        $extracted = Get-ChildItem $toolsDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { (-not $before.Contains($_.Name)) -and
+                           ($_.Name -match "colmap") -and
+                           ($_.Name -notmatch $otherWord) } |
+            Select-Object -First 1
     }
 
     if ($extracted -and $extracted.FullName -ne $targetDir) {
@@ -306,9 +346,6 @@ function Install-Colmap($pattern, $targetDirName, $label) {
         Rename-Item $extracted.FullName $targetDir
         Write-Host "  Renamed '$($extracted.Name)' -> '$targetDirName'"
     }
-
-    # Clean up zip after successful extraction
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 
     if (Test-Path $targetExe) {
         Write-Host "[OK] COLMAP ($label) installed: $targetDir" -ForegroundColor Green
