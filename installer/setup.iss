@@ -7,7 +7,7 @@
 ; 版本号单一来源是 build_setup.ps1 的 $AppVersion（通过 /DMyAppVersion= 传入）；
 ; 直接用 ISCC 编译时用此处默认值（改版本号请改 build_setup.ps1 的 $AppVersion，并顺手同步这里）
 #ifndef MyAppVersion
-  #define MyAppVersion "2.2.0"
+  #define MyAppVersion "2.3.0"
 #endif
 #define MyAppPublisher "3DGS Studio"
 #define MyAppExeName "3DGS-Studio.exe"
