@@ -92,12 +92,12 @@ COLMAP 只能恢复到一个未知相似变换，导出的 PLY 没有米制尺�
       加 tag 触发的 `windows-latest` job 产出 artifact，并自动写 SHA-256 到 Release 正文
       （README 现在让用户自己核对哈希，这步应该由流水线代劳）
 - [ ] **仓库改 public**：目前仍是 private，README「到 Releases 页面下载安装包」对外部
-      访客无效（v2.0.0 / v2.1.0 / v2.2.0 三个 release 只有协作者能下载）。
+      访客无效（各版本的 release 只有协作者能下载）。
       决定暂缓公开，公开前建议顺手确认代码签名是否要先做
 - [ ] setup.exe / 启动器代码签名（当前未签名，首启会有 SmartScreen 提示）
 - [ ] 无 Python / 无显卡开发包的干净机器（或虚拟机）安装实测
-- [ ] 发布正式版时把 Release 资源命名统一为
-      `3DGS-Studio-windows-x64-Setup-<version>.exe`（构建脚本已按此命名）
+- [x] Release 资源统一命名为 `3DGS-Studio-windows-x64-Setup-<version>.exe`
+      （构建脚本按此命名，2.1.0 起各版本均已一致；一个 release 只放对应版本的一个包）
 
 ## 🧪 远期 / 深度优化（需改 C++ / Shader）
 

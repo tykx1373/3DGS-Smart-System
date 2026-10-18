@@ -6,7 +6,7 @@
        (using the portable Python env)
     2) Stage the launcher at the repo root (Inno Setup picks it up there)
     3) Compile installer\setup.iss with ISCC
-    4) Remove the staged copy; output installer\output\3DGS-Studio-Setup-2.0.0.exe
+    4) Remove the staged copy; output installer\output\3DGS-Studio-windows-x64-Setup-<version>.exe
 
     NOTE: this script must stay ASCII-only without BOM. Windows PowerShell 5.1
     decodes BOM-less .ps1 files as ANSI; any non-ASCII byte would turn into
