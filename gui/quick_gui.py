@@ -34,6 +34,7 @@ from pipeline_core import (  # noqa: E402
     _cfg_int, _cfg_choice, load_config, save_config,
     resolve_path, relativize_path,
     scan_history_models, delete_history_model, judge_eval_metrics,
+    capture_report_text, CAPTURE_ASK_TIMEOUT,
     PipelineCore,
 )
 import syscheck  # noqa: E402
@@ -41,6 +42,13 @@ import qt_theme  # noqa: E402
 from qt_theme import (  # noqa: E402
     apply_theme, make_label, Card, PrimaryButton, Toast, confirm,
 )
+
+
+# 内置示例数据集：安装包「示例数据集」组件会把它放到 <安装目录>/sample 下。
+SAMPLE_SUBDIR = os.path.join("sample", "south-building", "images")
+SAMPLE_DATASET_NAME = "south-building"
+# 少于这个张数 COLMAP 基本定位不出来，不配当新手的「第一次成功体验」。
+SAMPLE_MIN_IMAGES = 20
 
 
 # --------------------------------------------------------------- Var 适配 ----
@@ -65,8 +73,11 @@ class _Signals(QObject):
     progress = Signal(float, str)        # frac(-1 表示只更新文字), detail
     running = Signal(bool, bool)         # 是否运行中, 不确定进度条
     eval_ready = Signal(object)
+    failure = Signal(str, str)          # 原因, 建议
+    capture = Signal(object)            # 采集质量报告（工作线程发，等 UI 回答）
     log = Signal(str, str)               # 文本, 级别(info/warn/fail/ok)
     diag_done = Signal(str, object)      # 目标路径, 异常或 None
+    share_done = Signal(str, str)        # .splat 路径, 错误信息（空串表示成功）
 
 
 def _row(label, *widgets, tip=None, label_width=110):
@@ -144,6 +155,14 @@ class TrainPage(QWidget):
         card.body_layout.addWidget(row)
         card.body_layout.addWidget(
             make_label("拍照小技巧：绕物体一圈拍，每张重叠 60% 以上，建议 30~200 张。", "caption"))
+        # 手边没有适合的照片时，第一次不应该拿自己的照片去冒险失败。
+        win.sample_btn = QPushButton("手边没合适的照片？用内置示例照片试跑一次")
+        win.sample_btn.setToolTip(
+            "用随安装包附带的示例照片完整跑一遍：\n"
+            "先确认这台机器能出模型，再决定用自己的照片认真拍。")
+        win.sample_btn.clicked.connect(win.use_sample)
+        win.sample_btn.setVisible(win.sample_ready())
+        card.body_layout.addWidget(win.sample_btn)
         root.addWidget(card)
 
         # 参数卡
@@ -202,12 +221,6 @@ class TrainPage(QWidget):
             "减轻拍照时明暗不一致导致的重建色差/闪烁。\n"
             "曝光本来就一致的照片无需勾选；只处理训练副本，不动原图。")
         ol2.addWidget(win.exposure_chk)
-        win.splat_chk = QCheckBox("训练后同时导出 .splat（体积约 1/10）")
-        win.splat_chk.setToolTip(
-            "勾选：训练完成后在 PLY 旁额外生成同名 .splat 文件，\n"
-            "体积约为 PLY 的 1/10，可直接拖进 antimatter15/splat 等\n"
-            "网页查看器分享。只保留基础颜色，细节仍以 PLY 为准。")
-        ol2.addWidget(win.splat_chk)
         ol2.addStretch(1)
         card.body_layout.addWidget(optrow2)
         root.addWidget(card)
@@ -248,7 +261,42 @@ class TrainPage(QWidget):
         root.addWidget(win.det_bar)
         win.status_lab = make_label("就绪。请先选择照片文件夹。", "caption")
         root.addWidget(win.status_lab)
+
+        # 出错时把「原因 / 怎么办」直接放到主面板：日志默认折叠，
+        # 而新手出错时的第一反应从来不是翻日志。
+        self.fail_card = Card("这一步没成功")
+        self.fail_cause = QLabel("")
+        self.fail_cause.setWordWrap(True)
+        self.fail_cause.setStyleSheet(f"color:{qt_theme.RED}; font-weight:600;"
+                                      "background:transparent;")
+        self.fail_advice = QLabel("")
+        self.fail_advice.setWordWrap(True)
+        frow = QHBoxLayout()
+        frow.setContentsMargins(0, 0, 0, 0)
+        win.diag_btn = QPushButton("导出诊断包")
+        win.diag_btn.setToolTip("把最近日志、环境自检和配置打成一个 zip，发给开发者即可。")
+        win.diag_btn.clicked.connect(win.export_diagnostics)
+        win.fail_log_btn = QPushButton("看日志")
+        win.fail_log_btn.clicked.connect(win.show_log_page)
+        frow.addWidget(win.diag_btn)
+        frow.addWidget(win.fail_log_btn)
+        frow.addStretch(1)
+        self.fail_card.body_layout.addWidget(self.fail_cause)
+        self.fail_card.body_layout.addWidget(self.fail_advice)
+        self.fail_card.body_layout.addLayout(frow)
+        self.fail_card.setVisible(False)
+        root.addWidget(self.fail_card)
+
+        # 卡片里的按钮是「出错后才出现」的求助入口，不能像参数控件那样在
+        # 运行中被禁用（否则自动续训时用户点不到）；_apply_running 按此跳过。
+        self._runtime_exempt_widgets = (win.diag_btn, win.fail_log_btn)
         root.addStretch(1)
+
+    def set_failure(self, cause, advice):
+        """出错卡片：一句「为什么」+ 一句「现在怎么办」，摆在主面板上。"""
+        self.fail_cause.setText(cause)
+        self.fail_advice.setText("怎么办：" + advice)
+        self.fail_card.setVisible(True)
 
     def set_step_color(self, n):
         """圆形步骤徽章：未开始灰边 / 当前蓝底白字 / 完成绿底白勾。"""
@@ -271,7 +319,7 @@ class TrainPage(QWidget):
 
 # ============================================================== 历史模型页 ====
 class HistoryPage(QWidget):
-    COLS = ["时间", "模型", "档位", "步数", "PSNR", "SSIM", "LPIPS", "大小(MB)"]
+    COLS = ["时间", "模型", "档位", "步数", "PSNR", "SSIM", "LPIPS", "大小(MB)", "分享版(MB)"]
 
     def __init__(self, win):
         super().__init__()
@@ -284,19 +332,22 @@ class HistoryPage(QWidget):
         head = QHBoxLayout()
         head.addWidget(make_label("历史模型", "title"))
         head.addStretch(1)
-        refresh, open_btn, folder_btn, del_btn = (
-            QPushButton("刷新"), QPushButton("打开模型"),
+        refresh, open_btn, share_btn, folder_btn, del_btn = (
+            QPushButton("刷新"), QPushButton("打开模型"), QPushButton("发给别人"),
             QPushButton("打开目录"), QPushButton("删除"))
         refresh.clicked.connect(self.reload)
         open_btn.clicked.connect(self.open_selected)
+        share_btn.clicked.connect(self.share_selected)
         folder_btn.clicked.connect(self.open_folder)
         del_btn.clicked.connect(self.delete_selected)
-        for b in (refresh, open_btn, folder_btn, del_btn):
+        for b in (refresh, open_btn, share_btn, folder_btn, del_btn):
             b.setFixedHeight(34)
             head.addWidget(b)
         root.addLayout(head)
         root.addWidget(make_label(
-            "outputs/ 目录下所有训练成功的模型；双击行可用 VKGS 打开。指标来自该模型的 eval.json。",
+            "outputs/ 目录下所有训练成功的模型；双击行可用 VKGS 打开，"
+            "「发给别人」准备一个体积更小的 .splat 文件，可以直接把文件发出去。"
+            "指标来自该模型的 eval.json。",
             "caption"))
 
         self.table = QTableWidget()
@@ -336,6 +387,7 @@ class HistoryPage(QWidget):
                 f"{m['ssim']:.3f}" if "ssim" in m else "—",
                 f"{m.get('lpips_vgg', 0):.3f}" if m.get("lpips_vgg") is not None else "—",
                 f"{it['size_mb']:.1f}",
+                self._splat_mb(it),
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
@@ -347,7 +399,7 @@ class HistoryPage(QWidget):
         # 列宽：时间/档位/步数/指标/大小固定，模型名列吃剩余空间
         from PySide6.QtWidgets import QHeaderView
         header = self.table.horizontalHeader()
-        fixed = {0: 146, 2: 72, 3: 74, 4: 86, 5: 80, 6: 92, 7: 92}
+        fixed = {0: 146, 2: 72, 3: 74, 4: 86, 5: 80, 6: 92, 7: 92, 8: 96}
         for c, w in fixed.items():
             header.resizeSection(c, w)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -367,6 +419,26 @@ class HistoryPage(QWidget):
             Toast.show_toast(self, "未选择", "请先在列表里选一个模型。", "warning", 2500)
             return
         self.win.run_viewer(it["ply"])
+
+    @staticmethod
+    def _splat_mb(it):
+        """分享版大小；没有就显示「—」，点「发给别人」时会自动转一份。"""
+        p = it.get("splat")
+        if not p:
+            return "—"
+        try:
+            return f"{os.path.getsize(p) / 2**20:.1f}"
+        except OSError:
+            return "—"
+
+    def share_selected(self):
+        it = self._selected_item()
+        if not it:
+            Toast.show_toast(self, "未选择", "请先在列表里选一个模型。", "warning", 2500)
+            return
+        # 老模型可能没转过：按目录名命名，免得 splat.ply 转成 "splat.splat"
+        target = it.get("splat") or os.path.join(it["dir"], it["name"] + ".splat")
+        self.win.share_splat(it["ply"], splat_path=target)
 
     def open_folder(self):
         it = self._selected_item()
@@ -541,7 +613,7 @@ class LogPage(QWidget):
 
 # ============================================================== 评估结果弹窗 ====
 class EvalDialog(QDialog):
-    def __init__(self, mean, on_view, parent=None):
+    def __init__(self, mean, on_view, on_share=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("训练完成 · 质量评估")
         self.setMinimumWidth(430)
@@ -569,12 +641,23 @@ class EvalDialog(QDialog):
             rl.addWidget(c, 1)
             lay.addWidget(row)
         lay.addWidget(make_label("逐图明细见模型输出目录里的 eval.json", "caption"))
+        lay.addWidget(make_label(
+            "在本机看选「查看 3D 模型」（最清晰）；要把模型发给别人，"
+            "选「准备分享文件」。", "caption"))
         btns = QHBoxLayout()
         view = PrimaryButton("查看 3D 模型")
         view.clicked.connect(lambda: (on_view(), self.accept()))
         close = QPushButton("关闭")
         close.clicked.connect(self.accept)
         btns.addStretch(1)
+        if on_share is not None:
+            share = QPushButton("准备分享文件")
+            share.setToolTip(
+                "在 PLY 旁边准备一个体积小得多的 .splat 文件，可以直接把文件发出去。\n"
+                "对方用支持 .splat 的查看器打开（本软件就能直接打开它）。\n"
+                "分享版是固定光照，颜色会比本机预览平淡一些。")
+            share.clicked.connect(lambda: (on_share(), self.accept()))
+            btns.addWidget(share)
         btns.addWidget(view)
         btns.addWidget(close)
         lay.addLayout(btns)
@@ -762,7 +845,6 @@ class MainWindow(QMainWindow, PipelineCore):
         self.mask_var = Var(str(self.cfg.get("mask_dir", "") or ""))
         self.lpips_dl_var = Var(bool(self.cfg.get("lpips_download", False)))
         self.exposure_fix_var = Var(bool(self.cfg.get("exposure_fix", False)))
-        self.export_splat_var = Var(bool(self.cfg.get("export_splat", False)))
         self.colmap_var = Var(self.cfg.get("colmap_path", DEFAULT_COLMAP))
         self.vkgs_var = Var(self.cfg.get("vkgs_exe", DEFAULT_VKGS))
         self.vksplat_py_var = Var(self.cfg.get("vksplat_python", DEFAULT_VKSPLAT_PY))
@@ -776,7 +858,6 @@ class MainWindow(QMainWindow, PipelineCore):
         self.eval_chk.setChecked(bool(self.run_eval_var.get()))
         self.lpips_chk.setChecked(bool(self.lpips_dl_var.get()))
         self.exposure_chk.setChecked(bool(self.exposure_fix_var.get()))
-        self.splat_chk.setChecked(bool(self.export_splat_var.get()))
         self.cache_combo.setCurrentText(str(self.vs_cache_var.get()))
         idx = self.res_combo.findText(str(self.res_var.get()))
         self.res_combo.setCurrentIndex(max(0, idx))
@@ -801,8 +882,6 @@ class MainWindow(QMainWindow, PipelineCore):
         self.lpips_chk.toggled.connect(lambda v: (self.lpips_dl_var.set(v), self.save_options()))
         self.exposure_chk.toggled.connect(
             lambda v: (self.exposure_fix_var.set(v), self.save_options()))
-        self.splat_chk.toggled.connect(
-            lambda v: (self.export_splat_var.set(v), self.save_options()))
         self.cache_combo.currentTextChanged.connect(
             lambda v: (self.vs_cache_var.set(v), self.save_options()))
         self.res_combo.currentTextChanged.connect(
@@ -831,7 +910,6 @@ class MainWindow(QMainWindow, PipelineCore):
             "res_choice": self.res_var.get(),
             "lpips_download": bool(self.lpips_dl_var.get()),
             "exposure_fix": bool(self.exposure_fix_var.get()),
-            "export_splat": bool(self.export_splat_var.get()),
             "train_steps": int(self.vs_steps_var.get()),
             "max_image_size": int(self.max_img_var.get()),
             "vs_mcmc": bool(self.vs_mcmc_var.get()),
@@ -923,8 +1001,11 @@ class MainWindow(QMainWindow, PipelineCore):
         self.sig.progress.connect(self._on_progress)
         self.sig.running.connect(self._apply_running)
         self.sig.eval_ready.connect(self._show_eval)
+        self.sig.failure.connect(self.train_page.set_failure)
+        self.sig.capture.connect(self._on_capture_report)
         self.sig.log.connect(self.log_page.append_line)
         self.sig.diag_done.connect(self._diagnostics_done)
+        self.sig.share_done.connect(self._on_share_done)
 
     def _on_progress(self, frac, detail):
         if frac >= 0:
@@ -939,12 +1020,16 @@ class MainWindow(QMainWindow, PipelineCore):
         self.det_bar.setVisible(running and not indeterminate)
         if running:
             self.det_bar.setValue(0)
+            self.train_page.fail_card.setVisible(False)   # 新一轮开始：收起上一次的报错
         # 运行中禁用参数（训练页 + 设置页），避免中途改设置。
         # 先统一处理，再单独设置开始/停止按钮，避免被循环覆盖。
         for page in (self.train_page, self.settings_page):
+            exempt = getattr(page, "_runtime_exempt_widgets", ())
             for typ in (QLineEdit, QSpinBox, QComboBox, QRadioButton,
                         QCheckBox, QPushButton):
                 for w in page.findChildren(typ):
+                    if w in exempt:
+                        continue
                     w.setEnabled(not running)
         self.run_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
@@ -962,11 +1047,45 @@ class MainWindow(QMainWindow, PipelineCore):
     def show_eval(self, mean):
         self.sig.eval_ready.emit(mean)
 
+    def show_failure(self, cause, advice):
+        """核心在工作线程调用：把「原因 / 怎么办」送到训练页卡片。"""
+        self.sig.failure.emit(cause, advice)
+
+    def show_log_page(self):
+        self.nav.setCurrentRow(self.NAV.index("日志"))
+
     def set_progress(self, frac, detail):
         self.sig.progress.emit(-1.0 if frac is None else float(frac), detail or "")
 
     def set_running(self, running, indeterminate=True):
         self.sig.running.emit(running, indeterminate)
+
+    def ask_capture_report(self, report):
+        """工作线程调用：让 UI 弹一次采集质量提示，并等用户回答。
+
+        信号是队列连接，弹窗一定落在 UI 线程；这里只等结果。超过
+        CAPTURE_ASK_TIMEOUT 秒没人回答就照常训练——提醒不该变成拦路。
+        """
+        ev = threading.Event()
+        box = {"go": True}
+        self._capture_wait = (ev, box)
+        self.sig.capture.emit(report)
+        ev.wait(CAPTURE_ASK_TIMEOUT)
+        return bool(box["go"])
+
+    def _on_capture_report(self, report):
+        """UI 线程：显示报告，把用户的选择写回等待中的工作线程。"""
+        wait = getattr(self, "_capture_wait", None)
+        if not wait:
+            return
+        ev, box = wait
+        try:
+            box["go"] = confirm(
+                self, "照片检查结果",
+                capture_report_text(report) + "\n\n现在就去补拍，还是先训练看看效果？",
+                "先训练看看", "去补拍")
+        finally:
+            ev.set()
 
     def ask_continue(self, do_colmap):
         try:
@@ -1016,6 +1135,33 @@ class MainWindow(QMainWindow, PipelineCore):
                     pass
 
     # ------------------------------------------------ UI 动作 ----
+    # ------------------------------------------------ 示例数据（P8）----
+    def sample_dir(self):
+        """内置示例照片目录（安装时勾选「示例数据集」才会有）。"""
+        return resolve_path(SAMPLE_SUBDIR)
+
+    def sample_ready(self):
+        n = self._count_images(self.sample_dir())
+        return n >= SAMPLE_MIN_IMAGES
+
+    def use_sample(self):
+        """选中示例照片并直接开跑：让新手第一次就在确定能跑通的数据上。
+
+        耗时确认仍走原有的 ask_continue，不会闷头开始一个几十分钟的任务。
+        """
+        d = self.sample_dir()
+        n = self._count_images(d)
+        if n < SAMPLE_MIN_IMAGES:
+            Toast.show_toast(self, "示例照片不可用",
+                             "安装时没有勾选「示例数据集」。重新运行安装程序并勾上它，"
+                             "或者点「浏览…」选自己的照片。", "warning", 6000)
+            self.sample_btn.setVisible(False)
+            return
+        self.img_edit.setText(d)
+        self._fill_workspace_from_images(d, n, name=SAMPLE_DATASET_NAME)
+        self._from_sample = True
+        self.start_pipeline()
+
     def browse_img(self):
         p = QFileDialog.getExistingDirectory(self, "选择照片文件夹")
         if not p:
@@ -1025,13 +1171,18 @@ class MainWindow(QMainWindow, PipelineCore):
         if n == 0:
             Toast.show_toast(self, "没有图片", "该文件夹里没有支持的图片。", "warning", 3000)
             return
+        self._from_sample = False     # 用户换成自己的照片了，别再按「第一次」来说话
         self.status_lab.setText(f"已选择 {n} 张照片。")
         self._fill_workspace_from_images(p, n)
 
-    def _fill_workspace_from_images(self, p, n_imgs):
+    def _fill_workspace_from_images(self, p, n_imgs, name=None):
         """选好照片后预填工作区名；图片数与旧工作区不符时让用户选择，
-        防止把新数据集的 COLMAP 结果覆盖到旧工作区。"""
-        name = os.path.basename(p.rstrip("/\\")) or "project"
+        防止把新数据集的 COLMAP 结果覆盖到旧工作区。
+
+        name 由示例入口传入：示例照片放在 .../south-building/images 下，
+        照目录名取到的工作区会叫「images」，对新手毫无意义。
+        """
+        name = name or os.path.basename(p.rstrip("/\\")) or "project"
         ws_rel = os.path.join("workspaces", f"{name}_{n_imgs}imgs_gs")
         ws_abs = resolve_path(ws_rel)
         if os.path.isdir(ws_abs):
@@ -1094,6 +1245,67 @@ class MainWindow(QMainWindow, PipelineCore):
             if p:
                 self.run_viewer(p)
 
+    def share_splat(self, ply_path, splat_path=None):
+        """准备 .splat 分享文件，完成后打开所在文件夹并选中它。
+
+        转换放到后台线程：读上百 MB 的 PLY 会卡 UI 好几秒。
+        """
+        if not ply_path or not os.path.isfile(ply_path):
+            Toast.show_toast(self, "还没有可分享的模型",
+                             "先完成一次训练，再点这个按钮。", "warning", 3500)
+            return
+        target = splat_path or os.path.splitext(ply_path)[0] + ".splat"
+
+        def work():
+            try:
+                if not os.path.isfile(target):
+                    made = self._export_splat(ply_path, dest=target)
+                    if not made or not os.path.isfile(made):
+                        self.sig.share_done.emit("", "分享版生成失败，详见日志。")
+                        return
+                    target = made
+                self.sig.share_done.emit(target, "")
+            except Exception as e:
+                self.sig.share_done.emit("", f"分享版生成失败: {e}")
+
+        self.set_status("正在生成分享用的 .splat 文件...")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_share_done(self, splat_path, error):
+        if error:
+            self.set_status(error)
+            Toast.show_toast(self, "分享失败", error, "error", 4500)
+            return
+        try:
+            mb = os.path.getsize(splat_path) / 2**20
+        except OSError:
+            mb = 0.0
+        self.set_status("分享文件已就绪。")
+        try:
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(splat_path)])
+        except OSError as e:
+            self._log(f"[WARN] 无法打开文件夹: {e}")
+        confirm(self, "分享文件已准备好",
+                f"已在文件夹里选中：\n{os.path.basename(splat_path)}（{mb:.1f} MB）\n\n"
+                f"把这个文件发给对方即可，它比 .ply 小得多。\n"
+                f"对方那边用支持 .splat 的查看器打开——本软件「查看 3D 模型」"
+                f"里选这个文件也能直接打开。\n\n"
+                f"注意：分享版是固定光照，颜色比本机预览平淡一些，\n"
+                f"这是正常的；模型本体仍是旁边的 .ply。",
+                "知道了", "关闭")
+
+    def share_latest_splat(self):
+        """分享最近一次训练结果；工作区里没有模型时让用户自己挑一个 PLY。"""
+        ws = resolve_path(self.ws_var.get().strip())
+        ply = self._find_latest_ply(ws) if ws else None
+        if not ply:
+            p, _ = QFileDialog.getOpenFileName(self, "选择要分享的 .ply 模型",
+                                               os.path.join(PROJECT_ROOT, "outputs"),
+                                               "PLY 模型 (*.ply)")
+            ply = p or None
+        if ply:
+            self.share_splat(ply)
+
     def open_syscheck(self):
         SyscheckDialog(self).exec()
 
@@ -1140,7 +1352,8 @@ class MainWindow(QMainWindow, PipelineCore):
                 self._log(f"[WARN] 无法打开文件夹: {e}")
 
     def _show_eval(self, mean):
-        dlg = EvalDialog(mean, on_view=self.open_viewer, parent=self)
+        dlg = EvalDialog(mean, on_view=self.open_viewer,
+                         on_share=self.share_latest_splat, parent=self)
         dlg.exec()
 
     # 三个开始入口（按钮绑定）

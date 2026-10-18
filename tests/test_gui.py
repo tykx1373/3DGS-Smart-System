@@ -121,6 +121,20 @@ def _bare_app():
     return q.QuickSplatApp.__new__(q.QuickSplatApp)
 
 
+def _images_bin(names, pt_bytes=24, n2d=3):
+    """按 COLMAP images.bin 布局造假数据：每张图只写定位成功的那些。"""
+    import struct
+    buf = bytearray(struct.pack("<q", len(names)))
+    for i, name in enumerate(names):
+        buf += struct.pack("<i", i + 1)              # image_id
+        buf += struct.pack("<7d", *([0.0] * 7))      # qvec(4) + tvec(3)
+        buf += struct.pack("<i", 1)                  # camera_id
+        buf += name.encode("ascii") + b"\x00"
+        buf += struct.pack("<Q", n2d)
+        buf += b"\x00" * (n2d * pt_bytes)            # 每个 2D 点 24（4.x）或 32（3.x）字节
+    return bytes(buf)
+
+
 class TestWorkspaceProbing(unittest.TestCase):
     def setUp(self):
         self.app = _bare_app()
@@ -234,6 +248,39 @@ class TestExifOrientation(unittest.TestCase):
             self.dst, self.src, 1, rotated_names={"a.jpg"}))
         a = _cv2.imread(os.path.join(self.dst, "a.jpg"))
         self.assertEqual(a.shape, (40, 20, 3))
+
+    @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
+    def test_rename_retries_when_file_locked(self):
+        """Windows 上刚写出的 jpg 会被杀软/索引服务短暂占用，重命名偶发 WinError 5；
+        必须重试而不是把异常抛上去（这条也钉住曾经让本文件偶发失败的竞态）。"""
+        from unittest import mock
+        self._write_jpeg("a.jpg", (40, 20))
+        real_rename = os.rename
+        calls = []
+
+        def flaky(src, dst):
+            calls.append(1)
+            if len(calls) < 3:
+                raise OSError(13, "Permission denied")
+            return real_rename(src, dst)
+
+        with mock.patch.object(q.os, "rename", side_effect=flaky), \
+                mock.patch.object(q.time, "sleep", lambda _s: None):
+            ok = self.app._make_downscaled(self.dst, self.src, 2, rotated_names=set())
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(os.path.isfile(os.path.join(self.dst, "a.jpg")))
+
+    @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
+    def test_rename_exhausted_fails_cleanly(self):
+        """重试耗尽要返回 False 并说清下一步，不能抛异常。"""
+        from unittest import mock
+        self._write_jpeg("a.jpg", (40, 20))
+        with mock.patch.object(q.os, "rename", side_effect=OSError(13, "denied")), \
+                mock.patch.object(q.time, "sleep", lambda _s: None):
+            ok = self.app._make_downscaled(self.dst, self.src, 2, rotated_names=set())
+        self.assertFalse(ok)
+        self.assertTrue(any("重命名" in t for t in self.logs))
 
     @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
     def test_stale_copy_without_marker_is_rebuilt_then_skipped(self):
@@ -394,6 +441,269 @@ class TestHistoryModels(unittest.TestCase):
         ok, _ = q.delete_history_model(d, self.out)
         self.assertTrue(ok)
         self.assertFalse(os.path.exists(d))
+
+
+class TestSplatShare(unittest.TestCase):
+    """.splat 分享版：默认落在 PLY 同名处，历史模型要能被找回来。"""
+
+    PROPS = ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+             "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
+
+    def setUp(self):
+        self.app = _bare_app()
+        self.lines = []
+        self.app._log = self.lines.append
+        self.tmp = tempfile.mkdtemp(prefix="splat_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _write_ply(self, name, n=2, nan_index=None):
+        import struct
+        path = os.path.join(self.tmp, name)
+        header = ("ply\nformat binary_little_endian 1.0\n"
+                  f"element vertex {n}\n"
+                  + "".join(f"property float {p}\n" for p in self.PROPS)
+                  + "end_header\n")
+        body = b""
+        for i in range(n):
+            vals = [1.0, 2.0, 3.0, 0.5, 0.5, 0.5, 2.0,
+                    -2.0, -2.0, -2.0, 1.0, 0.0, 0.0, 0.0]
+            if nan_index == i:
+                vals[0] = float("nan")
+            body += struct.pack("<14f", *vals)
+        with open(path, "wb") as f:
+            f.write(header.encode("ascii"))
+            f.write(body)
+        return path
+
+    def test_default_dest_matches_ply_stem(self):
+        ply = self._write_ply("vksplat_5000steps_fast.ply", n=2)
+        out = self.app._export_splat(ply)
+        self.assertEqual(out, os.path.join(self.tmp, "vksplat_5000steps_fast.splat"))
+        self.assertEqual(os.path.getsize(out), 2 * 32)
+
+    def test_explicit_dest_avoids_splat_splat(self):
+        """outputs 里的模型都叫 splat.ply，默认命名会变成 "splat.splat"，
+        所以分享历史模型时必须按目录名指定 dest。"""
+        ply = self._write_ply("splat.ply", n=1)
+        dest = os.path.join(self.tmp, "vksplat_15000steps_standard.splat")
+        out = self.app._export_splat(ply, dest=dest)
+        self.assertEqual(out, dest)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "splat.splat")))
+
+    def test_nan_gaussians_are_dropped(self):
+        ply = self._write_ply("bad.ply", n=3, nan_index=1)
+        out = self.app._export_splat(ply)
+        self.assertEqual(os.path.getsize(out), 2 * 32)
+        self.assertTrue(any("NaN" in t for t in self.lines))
+
+    def test_not_a_3dgs_ply_returns_none_without_raising(self):
+        path = os.path.join(self.tmp, "plain.ply")
+        with open(path, "w", encoding="ascii") as f:
+            f.write("ply\nformat binary_little_endian 1.0\nelement vertex 1\n"
+                    "property float x\nend_header\n")
+            f.write("\x00" * 4)
+        self.assertIsNone(self.app._export_splat(path))
+        self.assertTrue(any("导出失败" in t for t in self.lines))
+
+    def test_scan_history_finds_share_version_by_dir_name(self):
+        out = os.path.join(self.tmp, "outputs")
+        d = os.path.join(out, "vksplat_5000steps_fast")
+        os.makedirs(d)
+        shutil.copy(self._write_ply("vksplat_5000steps_fast.ply"),
+                    os.path.join(d, "splat.ply"))
+        self.assertIsNone(q.scan_history_models(out)[0]["splat"])
+        want = os.path.join(d, "vksplat_5000steps_fast.splat")
+        with open(want, "wb") as f:
+            f.write(b"\x00" * 32)
+        self.assertEqual(q.scan_history_models(out)[0]["splat"], want)
+
+
+class TestFailureSurface(unittest.TestCase):
+    """失败原因除了进日志，还必须送到主面板回调（新手不翻折叠日志）。"""
+
+    def setUp(self):
+        self.app = _bare_app()
+        self.app._last_failure_hint = None
+        self.lines = []
+        self.cards = []
+        self.app._log = self.lines.append
+        self.app.show_failure = lambda cause, advice: self.cards.append((cause, advice))
+
+    def test_known_error_reaches_the_panel(self):
+        self.app._explain_failure(1, "ERROR: Failed to allocate buffer memory (out of VRAM)")
+        self.assertEqual(len(self.cards), 1)
+        self.assertIn("显存", self.cards[0][0])
+        self.assertTrue(any("原因:" in t for t in self.lines))
+
+    def test_unrecognized_error_still_reaches_the_panel(self):
+        """认不出原因时也要有兜底卡片，不能让主面板一片空白。"""
+        self.app._explain_failure(1, "some output nobody taught us about")
+        self.assertEqual(len(self.cards), 1)
+        self.assertIn("诊断包", self.cards[0][1])
+
+    def test_same_reason_is_not_shown_twice(self):
+        """自动续训会反复撞上同一个错误，卡片只说一次。"""
+        out = "Failed to allocate staging buffer memory (out of RAM)"
+        self.app._explain_failure(1, out)
+        self.app._explain_failure(1, out)
+        self.assertEqual(len(self.cards), 1)
+
+    def test_host_without_the_callback_still_works(self):
+        """宿主没实现 show_failure 时（比如无界面跑批）不能因此崩掉管线。"""
+        del self.app.show_failure
+        self.app._explain_failure(1, "out of VRAM")
+        self.assertTrue(any("原因:" in t for t in self.lines))
+
+
+class TestCaptureReportHelpers(unittest.TestCase):
+    """P7 的纯函数：images.bin 解析、清晰度阈值、报告与文案。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="caphelp_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _write(self, tmp, blob, name="images.bin"):
+        os.makedirs(tmp, exist_ok=True)
+        with open(os.path.join(tmp, name), "wb") as f:
+            f.write(blob)
+        return tmp
+
+    def test_parses_both_point2d_record_sizes(self):
+        """COLMAP 3.x 每个 2D 点 32 字节，4.x 起是 24 字节，两种都要认。"""
+        names = ["a.jpg", "b.jpg", "c.jpg"]
+        for pt in (24, 32):
+            d = self._write(os.path.join(self.tmp, "sparse_%d" % pt),
+                            _images_bin(names, pt))
+            self.assertEqual(q.read_registered_names(d), set(names))
+
+    def test_truncated_file_is_not_guessed(self):
+        """解析不出来就返回 None；拿半截错位结果去劝用户补拍更糟。"""
+        blob = _images_bin(["a.jpg", "b.jpg"], 24)
+        d = self._write(os.path.join(self.tmp, "sparse_bad"), blob[:-5])
+        self.assertIsNone(q.read_registered_names(d))
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(q.read_registered_names(os.path.join(self.tmp, "nope")))
+
+    def test_blur_needs_enough_samples(self):
+        scores = [("a.jpg", 5.0), ("b.jpg", 500.0)]
+        self.assertEqual(q.pick_blurry(scores), [])
+        many = [("x%d.jpg" % i, 500.0) for i in range(10)]
+        many[0] = ("blurry.jpg", 3.0)
+        self.assertEqual([n for n, _s in q.pick_blurry(sorted(many))], ["blurry.jpg"])
+
+    def test_report_none_when_photos_look_fine(self):
+        allp = ["a.jpg", "b.jpg"]
+        self.assertIsNone(q.build_capture_report(allp, set(allp), []))
+
+    def test_report_lists_which_photos_failed(self):
+        allp = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+        rep = q.build_capture_report(allp, {"a.jpg", "b.jpg"}, [])
+        self.assertEqual(rep["level"], "bad")          # 50% 定位成功
+        self.assertEqual(rep["missing"], ["c.jpg", "d.jpg"])
+
+    def test_text_avoids_jargon_and_offers_redo(self):
+        allp = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+        rep = q.build_capture_report(allp, {"a.jpg", "b.jpg", "c.jpg"}, [])
+        text = q.capture_report_text(rep)
+        self.assertIn("1 张照片没能对上位置", text)
+        self.assertIn("d.jpg", text)
+        self.assertIn("重叠", text)
+        for jargon in ("注册率", "COLMAP", "Registered"):
+            self.assertNotIn(jargon, text)
+
+
+class TestCaptureGate(unittest.TestCase):
+    """训练前的这道提醒：只提醒不拦截，任何失败都必须照常训练。"""
+
+    def setUp(self):
+        self.app = q.PipelineCore.__new__(q.PipelineCore)
+        self.app._log = lambda t: None
+        self.app._capture_report = None
+        self.tmp = tempfile.mkdtemp(prefix="capgate_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_no_report_means_train(self):
+        self.assertTrue(self.app._confirm_capture_quality())
+
+    def test_headless_host_without_callback_still_trains(self):
+        self.app._capture_report = {"level": "warn", "missing": ["a.jpg"]}
+        self.assertTrue(self.app._confirm_capture_quality())
+
+    def test_host_answer_is_respected(self):
+        self.app._capture_report = {"level": "bad", "missing": ["a.jpg"]}
+        self.app.ask_capture_report = lambda report: False
+        self.assertFalse(self.app._confirm_capture_quality())
+
+    def test_host_exception_does_not_stop_training(self):
+        self.app._capture_report = {"level": "bad", "missing": ["a.jpg"]}
+
+        def boom(report):
+            raise RuntimeError("弹窗挂了")
+        self.app.ask_capture_report = boom
+        self.assertTrue(self.app._confirm_capture_quality())
+
+    def test_report_is_consumed_once(self):
+        self.app._capture_report = {"level": "bad", "missing": ["a.jpg"]}
+        self.app.ask_capture_report = lambda report: True
+        self.assertTrue(self.app._confirm_capture_quality())
+        self.assertIsNone(self.app._capture_report)
+
+    def _make_scene(self, registered_n, total_n=10):
+        names = ["p%02d.jpg" % i for i in range(total_n)]
+        sparse = os.path.join(self.tmp, "sparse", "0")
+        os.makedirs(sparse, exist_ok=True)
+        with open(os.path.join(sparse, "images.bin"), "wb") as f:
+            f.write(_images_bin(names[:registered_n]))
+        img_dir = os.path.join(self.tmp, "imgs")
+        os.makedirs(img_dir, exist_ok=True)
+        for n in names:
+            open(os.path.join(img_dir, n), "wb").close()
+        return names, sparse, img_dir
+
+    def test_stats_written_to_stderr_are_noticed(self):
+        """COLMAP 把 model_analyzer 的统计写到 stderr。只看 stdout 时永远解析不到，
+        注册率检查曾经整轮静默失效——这条钉住合并两个流的行为。"""
+        from unittest import mock
+        names, sparse, img_dir = self._make_scene(6)
+        fake = mock.Mock(stdout="", stderr="Images: 10\nRegistered images: 6\n")
+        with mock.patch.object(q.subprocess, "run", return_value=fake):
+            self.app._check_registration("colmap.exe", {}, sparse, 10, img_dir)
+        rep = self.app._capture_report
+        self.assertEqual(rep["missing"], names[6:])
+        self.assertEqual(rep["level"], "bad")
+
+    def test_healthy_batch_stays_quiet(self):
+        from unittest import mock
+        _names, sparse, img_dir = self._make_scene(10)
+        fake = mock.Mock(stdout="", stderr="Registered images: 10\n")
+        with mock.patch.object(q.subprocess, "run", return_value=fake):
+            self.app._check_registration("colmap.exe", {}, sparse, 10, img_dir)
+        self.assertIsNone(self.app._capture_report)
+
+    def test_check_failure_leaves_pipeline_untouched(self):
+        from unittest import mock
+        _names, sparse, img_dir = self._make_scene(6)
+        with mock.patch.object(q.subprocess, "run", side_effect=OSError("colmap 没了")):
+            self.app._check_registration("colmap.exe", {}, sparse, 10, img_dir)
+        self.assertIsNone(self.app._capture_report)
+        self.assertTrue(self.app._confirm_capture_quality())
+
+
+class TestFirstRunMessage(unittest.TestCase):
+    """示例首跑的那句里程碑话只说一次，之后恢复正常文案。"""
+
+    def setUp(self):
+        self.app = _bare_app()
+        self.app.init_core()
+
+    def test_milestone_then_normal(self):
+        self.app._from_sample = True
+        self.assertIn("第一个模型", self.app._done_message())
+        self.assertIn("历史记录", self.app._done_message())
+
+    def test_plain_run_is_not_called_first_time(self):
+        self.assertIn("历史记录", self.app._done_message())
 
 
 if __name__ == "__main__":

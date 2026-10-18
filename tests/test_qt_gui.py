@@ -146,6 +146,127 @@ class QtGuiTestCase(unittest.TestCase):
             qg.PROJECT_ROOT = orig_root
 
 
+    def test_history_share_uses_dir_named_splat(self):
+        """「发给别人」要按目录名指定分享版（免得变成 splat.splat），
+        并把请求转给 share_splat；没转过的模型大小列显示「—」。"""
+        out_root = tempfile.mkdtemp(prefix="qtout_")
+        outputs = os.path.join(out_root, "outputs")
+        d = os.path.join(outputs, "vksplat_5000steps_fast")
+        os.makedirs(d)
+        with open(os.path.join(d, "splat.ply"), "wb") as f:
+            f.write(b"x" * 2048)
+        calls = []
+        self.win.share_splat = lambda ply, splat_path=None: calls.append((ply, splat_path))
+        orig_root = qg.PROJECT_ROOT
+        qg.PROJECT_ROOT = out_root
+        try:
+            page = self.win.history_page
+            page.reload()
+            self.assertEqual(page.table.item(0, 8).text(), "—")
+            page.table.selectRow(0)
+            page.share_selected()
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][1],
+                             os.path.join(d, "vksplat_5000steps_fast.splat"))
+            with open(calls[0][1], "wb") as f:
+                f.write(b"\x00" * 32)
+            page.reload()
+            self.assertEqual(page.table.item(0, 8).text(), "0.0")
+        finally:
+            qg.PROJECT_ROOT = orig_root
+
+    def test_eval_share_button_follows_host_support(self):
+        """完成弹窗只在宿主支持分享时才出现「准备分享文件」。"""
+        mean = {"psnr": 26.0, "ssim": 0.85}
+        with_share = qg.EvalDialog(mean, on_view=lambda: None, on_share=lambda: None)
+        texts = [b.text() for b in with_share.findChildren(qg.QPushButton)]
+        self.assertTrue(any("分享" in t for t in texts))
+        without = qg.EvalDialog(mean, on_view=lambda: None)
+        texts2 = [b.text() for b in without.findChildren(qg.QPushButton)]
+        self.assertFalse(any("分享" in t for t in texts2))
+
+    def test_failure_card_shows_on_panel_and_resets_on_next_run(self):
+        """失败卡片要真的出现在训练页，且下一轮开始时收起。"""
+        card = self.win.train_page.fail_card
+        self.assertFalse(card.isVisibleTo(self.win))
+        self.win.show_failure("显存不够，分配失败", "把质量档位调低一档后重试")
+        _app.processEvents()   # 同线程信号是直连的，这里只是保险
+        self.assertTrue(card.isVisibleTo(self.win))
+        self.assertIn("显存", self.win.train_page.fail_cause.text())
+        self.assertIn("质量档位", self.win.train_page.fail_advice.text())
+        # 新一轮运行：卡片收起，但求助按钮不能被禁用扫描误伤
+        self.win._apply_running(True, True)
+        self.assertFalse(card.isVisibleTo(self.win))
+        self.assertTrue(self.win.diag_btn.isEnabled())
+
+    def test_show_log_page_jumps_to_log_tab(self):
+        self.win.show_log_page()
+        self.assertEqual(self.win.nav.currentRow(), self.win.NAV.index("日志"))
+
+    def test_capture_dialog_answers_the_caller(self):
+        """采集质量弹窗：用户点「去补拍」时 ask_capture_report 必须返回 False，
+        且文案里真的点名了失败的照片。"""
+        report = {"level": "bad", "rate": 0.33, "n_total": 3, "n_registered": 1,
+                  "missing": ["img001.jpg", "img002.jpg"], "blurry": []}
+        seen = []
+        orig = qg.confirm
+        qg.confirm = lambda parent, title, text, yes, no: (
+            seen.append((title, text, yes, no)), False)[1]
+        try:
+            self.assertFalse(self.win.ask_capture_report(report))
+        finally:
+            qg.confirm = orig
+        self.assertEqual(seen[0][0], "照片检查结果")
+        self.assertIn("img001.jpg", seen[0][1])
+        self.assertEqual(seen[0][2:4], ("先训练看看", "去补拍"))
+
+    def test_capture_dialog_continue_choice_trains(self):
+        report = {"level": "warn", "rate": 0.8, "n_total": 5, "n_registered": 4,
+                  "missing": ["img005.jpg"], "blurry": []}
+        orig = qg.confirm
+        qg.confirm = lambda *a, **k: True
+        try:
+            self.assertTrue(self.win.ask_capture_report(report))
+        finally:
+            qg.confirm = orig
+
+    def test_sample_entry_selects_dataset_and_workspace(self):
+        """示例入口：选中内置照片、按数据集目录命名工作区，然后交给原流程开跑。"""
+        root = tempfile.mkdtemp(prefix="sample_")
+        imgs = os.path.join(root, "sample", "south-building", "images")
+        os.makedirs(imgs)
+        for i in range(25):
+            open(os.path.join(imgs, "p%02d.jpg" % i), "w").close()
+        started = []
+        self.win.start_pipeline = lambda: started.append(True)
+        orig = pc.PROJECT_ROOT
+        pc.PROJECT_ROOT = root
+        try:
+            self.assertTrue(self.win.sample_ready())
+            self.win.use_sample()
+        finally:
+            pc.PROJECT_ROOT = orig
+        self.assertEqual(started, [True])
+        self.assertTrue(self.win.img_var.get().endswith(
+            os.path.join("sample", "south-building", "images")))
+        # 工作区要叫 south-building_...，不是照目录名取到的 images_...
+        self.assertIn("south-building_25imgs_gs", self.win.ws_var.get())
+        self.assertTrue(self.win._from_sample)
+
+    def test_use_sample_without_dataset_does_not_start(self):
+        """没装示例时不能给一个会点了没反应的按钮。"""
+        orig = pc.PROJECT_ROOT
+        pc.PROJECT_ROOT = tempfile.mkdtemp(prefix="nosample_")
+        started = []
+        self.win.start_pipeline = lambda: started.append(True)
+        try:
+            self.assertFalse(self.win.sample_ready())
+            self.win.use_sample()
+        finally:
+            pc.PROJECT_ROOT = orig
+        self.assertEqual(started, [])
+        self.assertFalse(self.win.sample_btn.isVisibleTo(self.win))
+
     def test_picking_images_prefills_workspace_name(self):
         root = tempfile.mkdtemp(prefix="wsfill_")
         imgs = os.path.join(root, "garden")

@@ -8,12 +8,15 @@ quick_gui.MainWindow（PySide6/Fluent）继承 PipelineCore。
   变量（get/set 即可，Tk Var 或 Qt 适配对象都行）:
     img_var, ws_var, quality_var, res_var, max_img_var, vs_steps_var,
     vs_cache_var, vs_mcmc_var, run_eval_var, mask_var, lpips_dl_var,
-    exposure_fix_var, export_splat_var, vksplat_py_var, colmap_var, vkgs_var
+    exposure_fix_var, vksplat_py_var, colmap_var, vkgs_var
   回调（核心可能在工作线程调用，宿主自己负责线程封送）:
     _log(text), set_status(text), set_step(n), set_running(running, indeterminate),
-    set_progress(frac, detail), set_workspace(path), show_eval(mean)
+    set_progress(frac, detail), set_workspace(path), show_eval(mean),
+    show_failure(cause, advice)
   仅 UI 线程调用的询问:
     ask_resume(), ask_continue(do_colmap) -> bool
+  工作线程发起、宿主负责弹窗并等待回答的询问:
+    ask_capture_report(report) -> bool   # False = 用户选择先去补拍
 """
 import os
 import re
@@ -93,6 +96,9 @@ DEFAULT_VKSPLAT_PY = _find_vksplat_python()
 # 训练崩溃自动续训
 TRAIN_MAX_RETRIES = 3   # 训练异常退出后，自动从恢复点续训的最大次数
 TRAIN_RETRY_DELAY = 10  # 每次续训前的等待秒数（给 GPU/驱动恢复留时间）
+# 生成照片副本后把临时目录改名放回原位：Windows 下文件可能被杀毒软件短暂占用
+RENAME_RETRIES = 5
+RENAME_RETRY_DELAY = 0.4
 
 # 训练图像分辨率：质量档位给默认值，用户可在高级选项里单独覆盖
 RES_AUTO = "跟随质量档位"
@@ -135,6 +141,21 @@ SEQUENTIAL_MATCHER_THRESHOLD = 100
 # mapper 后注册率（成功定位的照片占比）低于此值时提示补拍——
 # 提前诊断比等训练阶段报 "Failed to load image" 好得多。
 LOW_REGISTRATION_RATE = 0.7
+
+# 认不出具体原因时的兜底说法：主面板必须始终有内容可显示，
+# 否则新手面对一个不动的进度条完全不知道下一步做什么。
+GENERIC_FAILURE = ("这一步没有跑成功（原因没能自动识别）",
+                   "展开下方的运行日志看最后几行，或点「导出诊断包」把日志发给开发者。")
+
+# ---- 采集质量预检（P7）----
+# 注册率低于 LOW_REGISTRATION_RATE 属于「多半要失败」，介于两者之间算提醒。
+CAPTURE_WARN_RATE = 0.85
+BLUR_CHECK_MAX_EDGE = 640    # 清晰度打分前先缩图，控制耗时
+BLUR_RATIO = 0.4             # 低于本批中位数 40% 的算「发虚/细节太少」
+BLUR_ABS_FLOOR = 12.0        # 绝对下限：整批都很糊时也不至于一张都不报
+BLUR_MAX_LIST = 12           # 最多列几张，多了没人看
+BLUR_MIN_SAMPLES = 8         # 少于 8 张时中位数没有意义，跳过模糊判定
+CAPTURE_ASK_TIMEOUT = 300    # 等用户回答补拍与否的秒数上限
 
 
 # ------------------------------------------------------------ pure helpers ----
@@ -261,6 +282,7 @@ def scan_history_models(outputs_dir):
       name        目录名
       dir         绝对路径
       ply         主模型 PLY 路径（优先 splat.ply）
+      splat       同名 .splat 分享版路径（没有则为 None，可由 PLY 现转）
       mtime       目录修改时间戳
       steps/quality  训练步数与档位（从目录名或 config.json 推）
       metrics      eval.json 的 mean（可能为 None）
@@ -284,6 +306,13 @@ def scan_history_models(outputs_dir):
             continue
         ply = os.path.join(d, "splat.ply") if "splat.ply" in plys \
             else os.path.join(d, sorted(plys)[0])
+        try:
+            splats = [f for f in os.listdir(d) if f.lower().endswith(".splat")]
+        except OSError:
+            splats = []
+        want = name + ".splat"
+        splat = os.path.join(d, want) if want in splats \
+            else (os.path.join(d, sorted(splats)[0]) if splats else None)
         size_mb = 0.0
         for f in plys:
             try:
@@ -310,6 +339,7 @@ def scan_history_models(outputs_dir):
             "name": name,
             "dir": d,
             "ply": ply,
+            "splat": splat,
             "mtime": os.path.getmtime(d),
             "steps": steps,
             "quality": _HIST_QUALITY_ZH.get(quality) if quality else None,
@@ -349,9 +379,142 @@ def pick_colmap_matcher(n_imgs):
 
 
 def parse_registered_images(analyzer_output):
-    """从 `colmap model_analyzer` 输出解析 Registered images 数；解析不到返回 None。"""
+    """从 `colmap model_analyzer` 输出解析 Registered images 数；解析不到返回 None。
+
+    注意 COLMAP 把这类统计写到 **stderr**，调用方要把 stdout 和 stderr 拼起来再传进来。
+    """
     m = re.search(r"Registered images:\s*(\d+)", analyzer_output or "")
     return int(m.group(1)) if m else None
+
+
+# ---------------------------------------------------------- 采集质量预检 ----
+def _walk_images_bin(blob, pt_bytes):
+    """按 COLMAP images.bin 布局走一遍；走不通就返回 None。
+
+    每个 2D 点在 COLMAP 3.x 占 32 字节（含 point2D_id），4.x 起只存
+    x / y / point3D_id 共 24 字节，所以调用方两种尺寸都要试一次。
+    只有「文件名全是可打印 ASCII」且「刚好走到文件末尾」才算解析成功，
+    宁可返回 None 什么都不提醒，也不能拿半截错位的结果去让用户补拍。
+    """
+    import struct
+    try:
+        (n_img,), off = struct.unpack_from("<q", blob, 0), 8
+        names = set()
+        for _ in range(n_img):
+            off += 4 + 8 * 7 + 4          # image_id + qvec(4×f64) + tvec(3×f64) + camera_id
+            end = blob.index(b"\x00", off)
+            raw = blob[off:end]
+            if not raw or not all(32 <= c < 127 for c in raw):
+                return None
+            names.add(raw.decode("ascii"))
+            off = end + 1
+            (n2d,), off = struct.unpack_from("<Q", blob, off), off + 8
+            off += n2d * pt_bytes
+        return names if off == len(blob) else None
+    except (OSError, ValueError, IndexError, struct.error):
+        return None
+
+
+def read_registered_names(sparse_zero):
+    """读 COLMAP sparse/0/images.bin，返回定位成功的照片文件名集合；解析不出返回 None。
+
+    images.bin 里只写定位成功的图像，所以「全部照片名 − 这个集合」就是没对上的那些。
+    检查失败绝不能影响训练，调用方一律按 None 跳过。
+    """
+    try:
+        with open(os.path.join(sparse_zero, "images.bin"), "rb") as f:
+            blob = f.read()
+    except OSError:
+        return None
+    for pt_bytes in (24, 32):
+        names = _walk_images_bin(blob, pt_bytes)
+        if names is not None:
+            return names
+    return None
+
+
+def blur_scores(folder, names):
+    """给照片打清晰度分（缩小图上算 Laplacian 方差），按分数升序返回 [(文件名, 分数)]。
+
+    用 IMREAD_REDUCED_GRAYSCALE_8 按 1/8 解码，上百张也就一两秒。
+    cv2 用不了或某张读不出来一律跳过——同上一条一样，只做提醒。
+    """
+    try:
+        import cv2
+    except ImportError:
+        return []
+    out = []
+    for name in names:
+        try:
+            img = cv2.imread(os.path.join(folder, name), cv2.IMREAD_REDUCED_GRAYSCALE_8)
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            edge = max(h, w)
+            if edge > BLUR_CHECK_MAX_EDGE:
+                s = BLUR_CHECK_MAX_EDGE / float(edge)
+                img = cv2.resize(img, (max(1, int(w * s)), max(1, int(h * s))),
+                                 interpolation=cv2.INTER_AREA)
+            out.append((name, float(cv2.Laplacian(img, cv2.CV_64F).var())))
+        except Exception:
+            continue
+    out.sort(key=lambda x: x[1])
+    return out
+
+
+def pick_blurry(scores, ratio=BLUR_RATIO, floor=BLUR_ABS_FLOOR, cap=BLUR_MAX_LIST):
+    """从清晰度分数里挑出「明显比同批照片差」的几张。
+
+    只用绝对阈值会在白墙/天空这类低纹理场景大面积误报，所以以本批中位数为基准；
+    floor 只保证「整批都很糊」时也能报出几张。
+    """
+    if len(scores) < BLUR_MIN_SAMPLES:
+        return []
+    vals = sorted(s for _n, s in scores)
+    bar = max(floor, ratio * vals[len(vals) // 2])
+    return [(n, s) for n, s in scores if s < bar][:cap]
+
+
+def build_capture_report(all_names, registered_names, blurry):
+    """汇总成采集质量报告；没什么可提醒的（或信息不全）时返回 None。"""
+    n_total = len(all_names or ())
+    if not n_total or registered_names is None:
+        return None
+    missing = sorted(set(all_names) - set(registered_names))
+    rate = (n_total - len(missing)) / float(n_total)
+    if rate < LOW_REGISTRATION_RATE:
+        level = "bad"
+    elif rate < CAPTURE_WARN_RATE or blurry:
+        level = "warn"
+    else:
+        return None
+    return {"n_total": n_total, "n_registered": n_total - len(missing),
+            "rate": rate, "missing": missing, "blurry": list(blurry or ()),
+            "level": level}
+
+
+def capture_report_text(report, max_names=8):
+    """把报告写成新手能照做的句子：只说现象和怎么办，不出「注册率」这类词。"""
+    def _listing(items):
+        head = "、".join(items[:max_names])
+        return head + (f" 等 {len(items)} 张" if len(items) > max_names else "")
+
+    lines = []
+    if report["missing"]:
+        lines.append(f"有 {len(report['missing'])} 张照片没能对上位置："
+                     f"{_listing(report['missing'])}。")
+    if report["blurry"]:
+        lines.append("这几张看起来发虚或没什么细节："
+                     f"{_listing([n for n, _s in report['blurry']])}。")
+    lines.append("")
+    lines.append("怎么办：")
+    # 补拍建议按「有没有照片没对上」给，而不是只看等级：75% 注册率同样该绕一圈重拍。
+    if report["missing"]:
+        lines.append("· 绕着同一个物体再多走一圈补拍，每张跟上一张重叠一大半；")
+    if report["blurry"]:
+        lines.append("· 拿稳了再按快门，别边走边拍；光线暗就开灯或换个时间；")
+    lines.append("· 白墙、天空这类没细节的画面少拍，多拍旁边有特征的部分。")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------- PipelineCore ----
@@ -363,6 +526,33 @@ class PipelineCore:
         self.stop_flag = False
         self._ips_recorded = False
         self._last_failure_hint = None
+        self._capture_report = None
+        self._from_sample = False
+
+    def _done_message(self):
+        """跑完时给用户的那句话：示例首跑要说得像个里程碑。"""
+        if getattr(self, "_from_sample", False):
+            self._from_sample = False
+            return "这是你做出的第一个模型！在刚打开的窗口里按住鼠标拖动，就能围着它转。"
+        return "完成！3D 模型已生成，可随时在历史记录里重新打开。"
+
+    def _confirm_capture_quality(self):
+        """采集质量不达标时先问一句要不要去补拍；False 表示本轮就此停下。
+
+        只提醒不拦截：报告没有、照片没问题、宿主没实现弹窗，三种情况都照常训练。
+        """
+        report = getattr(self, "_capture_report", None)
+        self._capture_report = None
+        if not report:
+            return True
+        ask = getattr(self, "ask_capture_report", None)
+        if not callable(ask):
+            return True
+        try:
+            return bool(ask(report))
+        except Exception as e:
+            self._log(f"[WARN] 采集质量提示失败（按继续训练处理）: {e}")
+            return True
 
     # ----------------------------------------------------------- start/stop ----
     def start(self, do_colmap, do_train):
@@ -513,16 +703,28 @@ class PipelineCore:
         return True
 
     def _explain_failure(self, rc, output, colmap=False):
-        """把退出码翻译成人话。同一原因只讲一次，避免自动续训时重复刷屏。"""
-        hint = diagnostics.explain_failure(rc, output, colmap=colmap)
-        if not hint:
-            return
+        """把退出码翻译成人话：日志一份，主面板一份。
+
+        同一原因只讲一次，避免自动续训时重复刷屏。日志默认折叠，新手出错时
+        第一反应不是翻日志，所以原因和建议必须同时送到界面上（show_failure）。
+        """
+        hint = diagnostics.explain_failure(rc, output, colmap=colmap) or GENERIC_FAILURE
         if hint == self._last_failure_hint:
             return
         self._last_failure_hint = hint
         cause, advice = hint
         self._log(f"[FAIL] 原因: {cause}")
         self._log(f"[WARN] 建议: {advice}")
+        self._notify_failure(cause, advice)
+
+    def _notify_failure(self, cause, advice):
+        """把「原因 + 怎么办」送到主面板；宿主没实现该回调时静默跳过。"""
+        show = getattr(self, "show_failure", None)
+        if callable(show):
+            try:
+                show(cause, advice)
+            except Exception:
+                pass   # 面板显示失败不能反过来影响管线
 
     # -------------------------------------------------------- junction ----
     def _make_junction(self, link, target):
@@ -727,7 +929,22 @@ class PipelineCore:
                 self._remove_dir_or_link(tmp_dir)
                 self._log(f"[FAIL] 无法替换 {dst_dir}: {e}")
                 return False
-        os.rename(tmp_dir, dst_dir)
+        # Windows 上刚写出的 jpg 常被杀毒软件/索引服务短暂占用，目录重命名会偶发
+        # WinError 5。重试几次；仍失败就给出可执行的建议，而不是把异常抛给上层
+        # 变成一句"未预期的错误"。
+        for attempt in range(RENAME_RETRIES):
+            try:
+                os.rename(tmp_dir, dst_dir)
+                break
+            except OSError as e:
+                if attempt == RENAME_RETRIES - 1:
+                    self._log(f"[FAIL] 重命名到 {dst_dir} 失败: {e}")
+                    self._notify_failure(
+                        f"照片副本已生成，但放回原位时失败：{e}",
+                        "通常是杀毒软件或资源管理器正占用这些文件：稍等几秒再点一次"
+                        "「开始生成」，或把项目目录加入杀毒软件的排除列表")
+                    return False
+                time.sleep(RENAME_RETRY_DELAY)
         if rotated_names:
             try:
                 with open(os.path.join(dst_dir, EXIF_MARKER), "w") as f:
@@ -950,14 +1167,14 @@ if __name__ == "__main__":
             return None, None, None
 
         sparse_zero = self._ensure_sparse_zero(sparse_dir)
-        self._check_registration(colmap_exe, colmap_env, sparse_zero, n_imgs)
+        self._check_registration(colmap_exe, colmap_env, sparse_zero, n_imgs, img_dir)
         return colmap_exe, colmap_env, sparse_zero
 
-    def _check_registration(self, colmap_exe, colmap_env, sparse_zero, n_imgs):
-        """mapper 后检查注册率（成功定位的照片占比）。
+    def _check_registration(self, colmap_exe, colmap_env, sparse_zero, n_imgs, img_dir=None):
+        """mapper 后检查定位情况，必要时准备一份训练前的采集质量报告。
 
         过低说明照片重叠不足/缺乏纹理——现在就提示补拍，比等训练阶段报错好。
-        检查本身失败不影响后续训练。"""
+        检查本身失败不影响后续训练：报告留空，管线照跑。"""
         if not n_imgs:
             return
         try:
@@ -967,8 +1184,10 @@ if __name__ == "__main__":
         except Exception as e:
             self._log(f"[WARN] 注册率检查失败（不影响训练）: {e}")
             return
-        registered = parse_registered_images(r.stdout)
+        registered = parse_registered_images((r.stdout or "") + "\n" + (r.stderr or ""))
         if registered is None:
+            # 静默返回过一次：统计写在 stderr，早期只读 stdout 时这道检查空转了很久没人发现。
+            self._log("[WARN] 没能读到定位统计（不影响训练）。")
             return
         pct = registered / n_imgs * 100
         if registered / n_imgs < LOW_REGISTRATION_RATE:
@@ -977,6 +1196,24 @@ if __name__ == "__main__":
                       f"建议绕物体多拍一圈（每张重叠 60% 以上）后重新生成。")
         else:
             self._log(f"[INFO] 注册率 {pct:.0f}%（{registered}/{n_imgs} 张）。")
+
+        if registered / n_imgs >= CAPTURE_WARN_RATE:
+            return      # 定位得不错就别打扰用户，日志里那行百分比已经够了
+        try:
+            names = sorted(f for f in os.listdir(img_dir)
+                           if f.lower().endswith(IMAGE_EXTS)) if img_dir else []
+            reg_names = read_registered_names(sparse_zero)
+            if not names or reg_names is None:
+                return
+            # 只有定位已经不达标时才顺手看清晰度：一批照片多花一两秒，
+            # 换掉「训练两小时才发现白拍」的情况。
+            blurry = pick_blurry(blur_scores(img_dir, names))
+            report = build_capture_report(names, reg_names, blurry)
+            if report:
+                self._capture_report = report
+                self._log("[WARN] 采集质量报告已生成，训练开始前会提醒一次。")
+        except Exception as e:
+            self._log(f"[WARN] 采集质量检查失败（不影响训练）: {e}")
 
     def run_vksplat_train(self, ws_dir, img_dir, sparse_zero, output_ply):
         vksp_py = self.vksplat_py_var.get().strip() or DEFAULT_VKSPLAT_PY
@@ -1180,8 +1417,7 @@ if __name__ == "__main__":
             if os.path.exists(ply_path):
                 shutil.copy2(ply_path, output_ply)
                 self._log(f"[OK] 已将 PLY 复制到: {output_ply}")
-                if self.export_splat_var.get():
-                    self._export_splat(output_ply)
+                self._export_splat(output_ply)
                 self._report_eval(os.path.join(target, "eval.json"))
                 return True
 
@@ -1199,20 +1435,22 @@ if __name__ == "__main__":
             if newest_ply:
                 shutil.copy2(newest_ply, output_ply)
                 self._log(f"[OK] 已将最新 PLY 复制到: {output_ply}")
-                if self.export_splat_var.get():
-                    self._export_splat(output_ply)
+                self._export_splat(output_ply)
                 self._report_eval(os.path.join(os.path.dirname(newest_ply), "eval.json"))
         return True
 
-    def _export_splat(self, ply_path):
-        """PLY → .splat（antimatter15 网页查看器格式），体积约为 PLY 的 1/10。
+    def _export_splat(self, ply_path, dest=None):
+        """PLY → .splat（通用 splat 查看器格式），体积约为 PLY 的 1/7。
 
         每个高斯 32 字节：位置 3×float32 + 尺度 3×float32（保持 log 值，
         查看器自己 exp）+ RGBA 4×uint8（颜色由 SH 直流项算出、不透明度
         sigmoid 后量化）+ 旋转四元数 4×uint8（归一化后 ×128+128）。
         只保留 DC 颜色、丢弃高阶 SH，因此只适合预览分享，训练产物仍是 PLY。
+
+        dest 省略时写到 PLY 的同名 .splat；分享历史模型时由调用方按目录名命名，
+        否则 outputs 里的 splat.ply 会转成 "splat.splat"。
         """
-        splat_path = os.path.splitext(ply_path)[0] + ".splat"
+        splat_path = dest or os.path.splitext(ply_path)[0] + ".splat"
         try:
             import numpy as np
             with open(ply_path, "rb") as f:
@@ -1284,7 +1522,7 @@ if __name__ == "__main__":
             pct = splat_mb / ply_mb * 100 if ply_mb else 100.0
             self._log(f"[OK] 已导出 .splat: {splat_path}"
                       f"（{splat_mb:.1f} MB，为 PLY 的 {pct:.0f}%，"
-                      f"可直接拖进网页查看器分享）")
+                      f"体积小、适合直接发给别人）")
             return splat_path
         except Exception as e:
             self._log(f"[WARN] .splat 导出失败（不影响 PLY）: {e}")
@@ -1364,6 +1602,10 @@ if __name__ == "__main__":
             if self.stop_flag:
                 return
 
+            if do_train and not self._confirm_capture_quality():
+                self.set_status("已按你的选择停在训练前：补拍后重新点「开始生成 3D 模型」。")
+                return
+
             if do_train:
                 self.set_step(2)
                 self.set_status("正在训练 3D 模型...（请耐心等待）")
@@ -1381,7 +1623,7 @@ if __name__ == "__main__":
                 self.set_status("训练完成，正在打开 3D 查看器...")
                 self._run_viewer(output_ply)
                 self._log(f"[OK] 全部完成! 输出: {output_ply}")
-                self.set_status("完成！3D 模型已生成，可随时在历史记录里重新打开。")
+                self.set_status(self._done_message())
             else:
                 self.set_step(1)
                 self.set_status("空间定位完成。可点「开始生成 3D 模型」继续训练，或直接查看已有模型。")
@@ -1391,5 +1633,6 @@ if __name__ == "__main__":
             traceback.print_exc()
             self._log(f"[FAIL] 未预期的错误: {e}")
             self.set_status(f"发生错误: {e}")
+            self._notify_failure(f"程序遇到未预期的错误：{e}", GENERIC_FAILURE[1])
         finally:
             self.set_running(False)
