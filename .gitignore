@@ -467,4 +467,7 @@ installer/dist/
 installer/output/
 installer/build_version_info.txt
 
+# 个人编辑器配置（.vscode/settings.json 里是机器绝对路径，不适合共享）
+.vscode/
+
 
