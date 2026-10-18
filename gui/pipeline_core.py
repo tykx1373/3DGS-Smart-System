@@ -156,6 +156,14 @@ BLUR_ABS_FLOOR = 12.0        # 绝对下限：整批都很糊时也不至于一�
 BLUR_MAX_LIST = 12           # 最多列几张，多了没人看
 BLUR_MIN_SAMPLES = 8         # 少于 8 张时中位数没有意义，跳过模糊判定
 CAPTURE_ASK_TIMEOUT = 300    # 等用户回答补拍与否的秒数上限
+MIN_PHOTOS_RECOMMENDED = 30  # 少于这个张数，稀疏重建很容易失败（选照片时就提醒）
+
+# COLMAP mapper 每成功定位一张就打印一行；用它驱动重建阶段的真实进度。
+# 真实格式（见 docs/日志术语对照表.md，已对照 colmap.exe 内的格式串核实）：
+#   Registering image #50 (num_reg_frames=2)
+# #50 是数据库里的图像 id、括号里才是「已定位张数」——两者不能混用
+_COLMAP_REGISTER_RE = re.compile(
+    r"Registering image #(\d+)(?:\s*\(num_reg_frames=(\d+)\))?")
 
 
 # ------------------------------------------------------------ pure helpers ----
@@ -493,6 +501,23 @@ def build_capture_report(all_names, registered_names, blurry):
             "level": level}
 
 
+def photo_precheck_text(n_imgs, blurry, min_imgs=MIN_PHOTOS_RECOMMENDED):
+    """选完照片时的本地预检结论：只说能确定的事，措辞留余地。
+
+    清晰度低有两种原因（拍糊了 / 场景本来就没纹理），这里分不开，
+    所以只能说"这几张值得再看一眼"，不能断言照片不合格。
+    """
+    if n_imgs < min_imgs:
+        return (f"只有 {n_imgs} 张照片，比建议的 {min_imgs} 张少：绕着物体多拍几圈，"
+                f"相邻照片重叠 60% 以上更容易成功。", "warn")
+    if blurry:
+        head = "、".join(n for n, _s in blurry[:6])
+        more = f" 等 {len(blurry)} 张" if len(blurry) > 6 else ""
+        return (f"{n_imgs} 张照片里有 {len(blurry)} 张偏虚或细节很少：{head}{more}。"
+                f"（白墙、天空这类本来细节就少，不一定是问题）", "warn")
+    return (f"{n_imgs} 张照片清晰度都正常，可以开始生成。", "ok")
+
+
 def capture_report_text(report, max_names=8):
     """把报告写成新手能照做的句子：只说现象和怎么办，不出「注册率」这类词。"""
     def _listing(items):
@@ -528,6 +553,23 @@ class PipelineCore:
         self._last_failure_hint = None
         self._capture_report = None
         self._from_sample = False
+        # 整条管线共用一根进度条：每个阶段占一段，阶段内再按比例细分
+        self._p_lo, self._p_hi = 0.0, 1.0
+        self._colmap_span, self._train_span = (0.0, 1.0), (0.0, 1.0)
+        self._colmap_t0 = None
+        self._colmap_last_n = 0
+
+    # ---------------------------------------------------------- 进度分段 ----
+    def _set_span(self, lo, hi):
+        self._p_lo, self._p_hi = float(lo), float(hi)
+
+    def map_progress(self, frac):
+        """把阶段内的 0~1 映射到整条进度的当前区间。"""
+        f = max(0.0, min(1.0, float(frac)))
+        return self._p_lo + (self._p_hi - self._p_lo) * f
+
+    def _progress(self, frac, detail):
+        self.set_progress(self.map_progress(frac), detail)
 
     def _done_message(self):
         """跑完时给用户的那句话：示例首跑要说得像个里程碑。"""
@@ -562,11 +604,13 @@ class PipelineCore:
             return
         self._ips_recorded = False
         self.stop_flag = False
-        # 纯训练用确定进度条（会被 PROGRESS 标记驱动）；其余阶段不确定
-        indeterminate = not (do_train and not do_colmap)
-        self.set_running(True, indeterminate)
-        if not indeterminate:
-            self.set_progress(0, "准备训练...")
+        # COLMAP 也能逐张报进度了，所以全程用同一根确定进度条：
+        # 两个都做时 COLMAP 占前 30%，训练占后 70%；只做其一就占满。
+        self._colmap_span = (0.0, 0.30) if (do_colmap and do_train) else (0.0, 1.0)
+        self._train_span = (0.30, 1.0) if (do_colmap and do_train) else (0.0, 1.0)
+        self._set_span(*(self._colmap_span if do_colmap else self._train_span))
+        self.set_running(True, False)
+        self._progress(0, "正在准备..." if do_colmap else "正在准备训练...")
         threading.Thread(
             target=self.pipeline_thread,
             kwargs={"do_colmap": do_colmap, "do_train": do_train},
@@ -586,12 +630,17 @@ class PipelineCore:
                    if f.lower().endswith(IMAGE_EXTS))
 
     def _count_selected_images(self):
+        """当前选择文件夹里的可训练照片数；与 _count_images 同口径（复用 IMAGE_EXTS）。
+
+        只用于耗时估算，所以必须算成「真的会被处理的那几张」——早先这里多列了
+        .webp，混着 webp 的文件夹会把 COLMAP 耗时估算撑高。
+        """
         folder = resolve_path(self.img_var.get().strip()) if self.img_var.get().strip() else ""
         if not folder or not os.path.isdir(folder):
             return None
-        exts = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
         try:
-            return sum(1 for f in os.listdir(folder) if f.lower().endswith(exts))
+            return sum(1 for f in os.listdir(folder)
+                       if f.lower().endswith(IMAGE_EXTS))
         except Exception:
             return None
 
@@ -643,7 +692,8 @@ class PipelineCore:
             env["QT_PLUGIN_PATH"] = plugins + os.pathsep + env.get("QT_PLUGIN_PATH", "")
         return exe, env
 
-    def run_cmd(self, cmd_list, env=None, cwd=None, graceful_ws_dir=None, colmap=False):
+    def run_cmd(self, cmd_list, env=None, cwd=None, graceful_ws_dir=None, colmap=False,
+                colmap_total=0):
         display = " ".join(f'"{c}"' if (" " in c or c == "") else c for c in cmd_list)
         self._log(">>> " + display)
         try:
@@ -690,6 +740,8 @@ class PipelineCore:
             if line:
                 tail.append(line)
                 self._log(line)
+                if colmap_total:
+                    self._colmap_line_progress(line, colmap_total)
         self.current_proc.wait()
         rc = self.current_proc.returncode
         self.current_proc = None
@@ -701,6 +753,33 @@ class PipelineCore:
             self._explain_failure(rc, "\n".join(tail), colmap)
             return False
         return True
+
+    def _colmap_line_progress(self, line, total):
+        """用 mapper 的 "Registering image #N (num_reg_frames=M)" 驱动重建进度。
+
+        分子用括号里的「已定位张数」M，不是 #N：N 是数据库里的图像 id，刚定位
+        第 3 张时就可能是 97 号图，拿它当进度会一路虚报并给出荒唐的剩余时间。
+        不用 syscheck 的静态预估：那个数只到"整段 COLMAP"的粒度，而用户盯的是
+        这根条现在动不动。头几张定位的间隔不稳，攒够 5 张再给剩余时间。
+        """
+        m = _COLMAP_REGISTER_RE.search(line)
+        if not m:
+            return
+        n = int(m.group(2) or m.group(1))
+        # 场景不连通时 COLMAP 会另起一个子模型、计数从头开始，进度只许前进
+        n = max(n, getattr(self, "_colmap_last_n", 0))
+        self._colmap_last_n = n
+        now = time.time()
+        t0 = getattr(self, "_colmap_t0", None)
+        if t0 is None:
+            self._colmap_t0 = now
+        detail = f"正在定位照片 {min(n, total)}/{total}"
+        if n >= 5 and t0 is not None:
+            used = max(now - t0, 1.0)
+            left = used * max(total - n, 0) / float(n)
+            detail += (f" · 已用 {used/60:.1f} 分钟"
+                       f" · 预计还需 {left/60:.1f} 分钟")
+        self._progress(n / float(total), detail)
 
     def _explain_failure(self, rc, output, colmap=False):
         """把退出码翻译成人话：日志一份，主面板一份。
@@ -1128,6 +1207,15 @@ if __name__ == "__main__":
         os.makedirs(sparse_dir, exist_ok=True)
         max_img = self.max_img_var.get()
 
+        # COLMAP 三段在本阶段里的大致占比：提取 35% / 匹配 15% / 重建 50%
+        cm_lo, cm_hi = self._p_lo, self._p_hi
+        cm_span = cm_hi - cm_lo
+
+        def sub(a, b):
+            self._set_span(cm_lo + cm_span * a, cm_lo + cm_span * b)
+
+        sub(0.0, 0.35)
+        self._progress(0, "第 1/3 步 · 正在提取照片特征...")
         self._log("===== 步骤 1/3: COLMAP 特征提取 =====")
         if not self.run_cmd([
             colmap_exe, "feature_extractor",
@@ -1147,6 +1235,8 @@ if __name__ == "__main__":
                       f"自动切换 sequential 匹配（要求文件名按拍摄顺序命名，手机默认如此；"
                       f"若重建效果差，可按名称排序后重试）。")
 
+        sub(0.35, 0.50)
+        self._progress(0, "第 2/3 步 · 正在比对照片之间的重叠...")
         self._log("===== 步骤 2/3: COLMAP 特征匹配 =====")
         if not self.run_cmd([
             colmap_exe, f"{matcher}_matcher",
@@ -1157,14 +1247,19 @@ if __name__ == "__main__":
         if self.stop_flag:
             return None, None, None
 
+        sub(0.50, 1.00)
+        self._colmap_t0 = None
+        self._colmap_last_n = 0
+        self._progress(0, "第 3/3 步 · 正在计算相机位置并生成稀疏点云...")
         self._log("===== 步骤 3/3: COLMAP 稀疏重建 =====")
         if not self.run_cmd([
             colmap_exe, "mapper",
             "--database_path", db_path,
             "--image_path", images_link,
             "--output_path", sparse_dir,
-        ], env=colmap_env, colmap=True):
+        ], env=colmap_env, colmap=True, colmap_total=n_imgs):
             return None, None, None
+        self._progress(1.0, f"照片定位完成（{n_imgs} 张）")
 
         sparse_zero = self._ensure_sparse_zero(sparse_dir)
         self._check_registration(colmap_exe, colmap_env, sparse_zero, n_imgs, img_dir)
@@ -1586,6 +1681,7 @@ if __name__ == "__main__":
 
             if do_colmap:
                 self.set_step(1)
+                self._set_span(*self._colmap_span)
                 self.set_status("正在识别照片中的特征点并计算相机位置...（这一步最耗时）")
                 _, _, sparse_zero = self._run_colmap(img_dir, ws_dir)
                 if sparse_zero is None:
@@ -1608,6 +1704,7 @@ if __name__ == "__main__":
 
             if do_train:
                 self.set_step(2)
+                self._set_span(*self._train_span)
                 self.set_status("正在训练 3D 模型...（请耐心等待）")
                 if not self._run_train(ws_dir, img_dir, sparse_zero, output_ply):
                     if self.stop_flag:

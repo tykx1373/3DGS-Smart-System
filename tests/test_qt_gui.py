@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -266,6 +267,54 @@ class QtGuiTestCase(unittest.TestCase):
             pc.PROJECT_ROOT = orig
         self.assertEqual(started, [])
         self.assertFalse(self.win.sample_btn.isVisibleTo(self.win))
+
+    def test_precheck_label_and_stale_result_dropped(self):
+        """预检结论显示在照片卡片下方；换文件夹后旧结论不能覆盖新的。
+
+        序号是 start_photo_precheck 递增的，所以测试也照这个顺序设。
+        """
+        self.win._precheck_seq = 1
+        self.win._on_precheck("128 张照片清晰度都正常，可以开始生成。", "ok", 1)
+        self.assertIn("清晰度都正常", self.win.photo_note.text())
+        self.assertTrue(self.win.photo_note.isVisibleTo(self.win))
+        # 序号不是当前最新的（用户已经换了目录）→ 丢弃
+        self.win._precheck_seq = 2
+        self.win._on_precheck("过期结论", "warn", 1)
+        self.assertNotIn("过期", self.win.photo_note.text())
+
+    def test_photo_precheck_runs_in_background(self):
+        """真跑一遍本地预检：结果回来并显示。"""
+        d = os.path.join(qg.PROJECT_ROOT, "sample", "south-building", "images")
+        if not os.path.isdir(d):
+            self.skipTest("本机没有示例数据集")
+        names = [f for f in os.listdir(d) if f.lower().endswith(".JPG")]
+        self.win.start_photo_precheck(d, len(names))
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            _app.processEvents()
+            if "正在检查" not in self.win.photo_note.text():
+                break
+            time.sleep(0.1)
+        self.assertIn("张", self.win.photo_note.text())
+        self.assertNotIn("正在检查", self.win.photo_note.text())
+
+    def test_train_progress_text_avoids_duplicate_total(self):
+        """进度文案随分段变化：只训练时不必重复「总进度」。"""
+        got = []
+        self.win.sig.progress.connect(lambda f, d: got.append((round(f, 3), d)))
+        self.win._ips_recorded = True        # 别让测试写进耗时统计
+        self.win._train_span = (0.0, 1.0)
+        self.win._set_span(0.0, 1.0)
+        self.win._log("PROGRESS: 7500/15000 300.0 300.0 123456")
+        self.assertEqual(got[-1][0], 0.5)
+        self.assertIn("训练 50%", got[-1][1])
+        self.assertNotIn("总进度", got[-1][1])
+        # 与 COLMAP 同跑（训练只占后 70%）时才补一句整条管线走到哪
+        self.win._train_span = (0.30, 1.0)
+        self.win._set_span(*self.win._train_span)
+        self.win._log("PROGRESS: 7500/15000 300.0 300.0 123456")
+        self.assertEqual(got[-1][0], 0.65)
+        self.assertIn("总进度 65%", got[-1][1])
 
     def test_picking_images_prefills_workspace_name(self):
         root = tempfile.mkdtemp(prefix="wsfill_")

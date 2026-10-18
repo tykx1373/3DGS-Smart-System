@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -268,7 +269,9 @@ class TestExifOrientation(unittest.TestCase):
                 mock.patch.object(q.time, "sleep", lambda _s: None):
             ok = self.app._make_downscaled(self.dst, self.src, 2, rotated_names=set())
         self.assertTrue(ok)
-        self.assertEqual(len(calls), 3)
+        # 只要求「失败后重试并最终成功」：第 3 次走的是真 rename，
+        # 它自己也可能再被挡一次，所以钉死次数反而不稳。
+        self.assertGreaterEqual(len(calls), 3)
         self.assertTrue(os.path.isfile(os.path.join(self.dst, "a.jpg")))
 
     @unittest.skipUnless(_HAVE_CV2, "CI 环境未安装 opencv")
@@ -704,6 +707,90 @@ class TestFirstRunMessage(unittest.TestCase):
 
     def test_plain_run_is_not_called_first_time(self):
         self.assertIn("历史记录", self.app._done_message())
+
+
+class TestProgressSpans(unittest.TestCase):
+    """一根进度条跑完整条管线：阶段内 0~1 要映射到整条进度的对应区间。"""
+
+    def setUp(self):
+        self.app = _bare_app()
+        self.app.init_core()
+        self.got = []
+        self.app.set_progress = lambda f, d: self.got.append((round(f, 3), d))
+        self.app._log = lambda t: None
+
+    def test_train_span_offset(self):
+        self.app._set_span(0.30, 1.0)
+        self.app._progress(0.5, "训练一半")
+        self.assertEqual(self.got[-1][0], 0.65)
+
+    def test_clamped_out_of_range(self):
+        self.app._set_span(0.0, 0.3)
+        self.app._progress(1.7, "越界")
+        self.assertEqual(self.got[-1][0], 0.3)
+
+    def test_colmap_registration_line_drives_progress(self):
+        """真实日志行格式（docs/日志术语对照表.md 里那种）必须能认出来。
+
+        括号里的 num_reg_frames 才是已定位张数，所以分子取 96 而不是 #64。
+        """
+        self.app._set_span(0.5, 1.0)
+        self.app._colmap_t0 = time.time() - 120
+        self.app._colmap_line_progress(
+            "I20260930 15:20:26.003764 28524 incremental_pipeline.cc:620]"
+            " Registering image #64 (num_reg_frames=96)", 128)
+        frac, detail = self.got[-1]
+        self.assertAlmostEqual(frac, 0.5 + 0.5 * (96 / 128.0), places=3)
+        self.assertIn("96/128", detail)
+        self.assertIn("预计还需", detail)
+
+    def test_image_id_is_not_confused_with_registered_count(self):
+        """#N 是图像 id，不能当进度：刚定位第 3 张时 id 可能已经很大。"""
+        self.app._colmap_line_progress("Registering image #97 (num_reg_frames=3)", 128)
+        _frac, detail = self.got[-1]
+        self.assertIn("3/128", detail)
+        self.assertNotIn("97/128", detail)
+
+    def test_progress_never_goes_backward(self):
+        """多段重建（场景不连通）另起子模型时计数从头开始，进度也只许前进。"""
+        self.app._colmap_line_progress("Registering image #90 (num_reg_frames=90)", 128)
+        self.app._colmap_line_progress("Registering image #2 (num_reg_frames=2)", 128)
+        self.assertEqual(self.got[-1][0], self.got[-2][0])
+        self.assertIn("90/128", self.got[-1][1])
+
+    def test_other_lines_are_ignored(self):
+        self.app._colmap_line_progress("=> Reading images", 128)
+        self.assertEqual(self.got, [])
+
+    def test_first_line_only_starts_the_clock(self):
+        """头几张不稳，第一条只记时间、不给剩余时间估算。"""
+        self.app._colmap_line_progress("Registering image #7 (num_reg_frames=1)", 128)
+        self.assertEqual(len(self.got), 1)
+        self.assertNotIn("预计还需", self.got[0][1])
+        self.assertIsNotNone(self.app._colmap_t0)
+
+
+class TestPhotoPrecheck(unittest.TestCase):
+    """选完照片就地给的本地结论。"""
+
+    def test_too_few_photos(self):
+        text, level = q.photo_precheck_text(12, [])
+        self.assertEqual(level, "warn")
+        self.assertIn("12 张", text)
+        self.assertIn("30", text)
+
+    def test_blurry_photos_are_named(self):
+        _text, level = q.photo_precheck_text(120, [])
+        self.assertEqual(level, "ok")
+        text, level = q.photo_precheck_text(120, [("p9.jpg", 3.0), ("p8.jpg", 5.0)])
+        self.assertEqual(level, "warn")
+        self.assertIn("p9.jpg", text)
+        self.assertIn("不一定是问题", text)   # 低纹理会误报，措辞要留余地
+
+    def test_clean_batch_is_encouraging(self):
+        text, level = q.photo_precheck_text(128, [])
+        self.assertEqual(level, "ok")
+        self.assertIn("128", text)
 
 
 if __name__ == "__main__":

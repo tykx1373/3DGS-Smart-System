@@ -35,6 +35,7 @@ from pipeline_core import (  # noqa: E402
     resolve_path, relativize_path,
     scan_history_models, delete_history_model, judge_eval_metrics,
     capture_report_text, CAPTURE_ASK_TIMEOUT,
+    blur_scores, pick_blurry, photo_precheck_text, IMAGE_EXTS,
     PipelineCore,
 )
 import syscheck  # noqa: E402
@@ -75,6 +76,7 @@ class _Signals(QObject):
     eval_ready = Signal(object)
     failure = Signal(str, str)          # 原因, 建议
     capture = Signal(object)            # 采集质量报告（工作线程发，等 UI 回答）
+    precheck = Signal(str, str, int)    # 结论, 级别, 序号（旧的序号直接丢弃）
     log = Signal(str, str)               # 文本, 级别(info/warn/fail/ok)
     diag_done = Signal(str, object)      # 目标路径, 异常或 None
     share_done = Signal(str, str)        # .splat 路径, 错误信息（空串表示成功）
@@ -163,6 +165,10 @@ class TrainPage(QWidget):
         win.sample_btn.clicked.connect(win.use_sample)
         win.sample_btn.setVisible(win.sample_ready())
         card.body_layout.addWidget(win.sample_btn)
+        # 选完照片就地给一句本地检查结论，不用等 COLMAP 跑完才回头说照片不行
+        win.photo_note = make_label("", "caption")
+        win.photo_note.setVisible(False)
+        card.body_layout.addWidget(win.photo_note)
         root.addWidget(card)
 
         # 参数卡
@@ -953,12 +959,16 @@ class MainWindow(QMainWindow, PipelineCore):
                 step, total, num = int(s), int(t), int(n)
                 elapsed, eta = float(el), float(eta)
                 pct = step / total if total else 0.0
-                detail = (f"进度 {pct*100:.0f}% · {step}/{total} 步 · "
-                          f"已用 {elapsed/60:.1f} 分钟")
+                overall = self.map_progress(pct)
+                detail = f"训练 {pct*100:.0f}%"
+                if self._train_span != (0.0, 1.0):
+                    # 与 COLMAP 同跑时前 30% 归重建，这里补一句整条管线走到哪
+                    detail += f" · 总进度 {overall*100:.0f}%"
+                detail += (f" · {step}/{total} 步 · 已用 {elapsed/60:.1f} 分钟")
                 if eta > 0:
                     detail += f" · 剩余 {eta/60:.1f} 分钟"
                 detail += f" · {num} 个高斯"
-                self.sig.progress.emit(pct, detail)
+                self.sig.progress.emit(overall, detail)
                 # 约 30% 处记录一次累计平均 it/s，供下次耗时估算（每次运行仅一次）
                 if not self._ips_recorded and pct >= 0.3 and elapsed > 5:
                     self._ips_recorded = True
@@ -1003,6 +1013,7 @@ class MainWindow(QMainWindow, PipelineCore):
         self.sig.eval_ready.connect(self._show_eval)
         self.sig.failure.connect(self.train_page.set_failure)
         self.sig.capture.connect(self._on_capture_report)
+        self.sig.precheck.connect(self._on_precheck)
         self.sig.log.connect(self.log_page.append_line)
         self.sig.diag_done.connect(self._diagnostics_done)
         self.sig.share_done.connect(self._on_share_done)
@@ -1159,6 +1170,7 @@ class MainWindow(QMainWindow, PipelineCore):
             return
         self.img_edit.setText(d)
         self._fill_workspace_from_images(d, n, name=SAMPLE_DATASET_NAME)
+        self.start_photo_precheck(d, n)
         self._from_sample = True
         self.start_pipeline()
 
@@ -1174,6 +1186,38 @@ class MainWindow(QMainWindow, PipelineCore):
         self._from_sample = False     # 用户换成自己的照片了，别再按「第一次」来说话
         self.status_lab.setText(f"已选择 {n} 张照片。")
         self._fill_workspace_from_images(p, n)
+        self.start_photo_precheck(p, n)
+
+    def start_photo_precheck(self, folder, n_imgs):
+        """后台做一次本地照片检查（张数 + 清晰度），结论写在照片卡片下方。
+
+        不等 COLMAP 才开口：新手最不该付出的代价是白等二十分钟才听说照片不行。
+        """
+        self._precheck_seq = getattr(self, "_precheck_seq", 0) + 1
+        seq = self._precheck_seq
+        self.photo_note.setText("正在检查照片…")
+        self.photo_note.setVisible(True)
+
+        def work():
+            try:
+                names = sorted(f for f in os.listdir(folder)
+                               if f.lower().endswith(IMAGE_EXTS))
+                blurry = pick_blurry(blur_scores(folder, names))
+                text, level = photo_precheck_text(n_imgs, blurry)
+            except Exception as e:
+                self._log(f"[WARN] 照片预检失败（不影响使用）: {e}")
+                text, level = "", "ok"
+            self.sig.precheck.emit(text, level, seq)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_precheck(self, text, level, seq):
+        if seq != getattr(self, "_precheck_seq", 0):
+            return        # 用户已经换了文件夹，旧结论作废
+        self.photo_note.setText(text)
+        self.photo_note.setVisible(bool(text))
+        color = {"ok": qt_theme.GREEN_BRIGHT, "warn": "#d97706"}.get(level, "")
+        self.photo_note.setStyleSheet(f"color:{color}; background:transparent;" if color else "")
 
     def _fill_workspace_from_images(self, p, n_imgs, name=None):
         """选好照片后预填工作区名；图片数与旧工作区不符时让用户选择，
