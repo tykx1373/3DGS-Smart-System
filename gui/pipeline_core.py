@@ -162,7 +162,7 @@ CAPTURE_ASK_TIMEOUT = 300    # 等用户回答补拍与否的秒数上限
 MIN_PHOTOS_RECOMMENDED = 30  # 少于这个张数，稀疏重建很容易失败（选照片时就提醒）
 
 # COLMAP mapper 每成功定位一张就打印一行；用它驱动重建阶段的真实进度。
-# 真实格式（见 docs/日志术语对照表.md，已对照 colmap.exe 内的格式串核实）：
+# 真实格式（对照 colmap.exe 内的格式串核实）：
 #   Registering image #50 (num_reg_frames=2)
 # #50 是数据库里的图像 id、括号里才是「已定位张数」——两者不能混用
 _COLMAP_REGISTER_RE = re.compile(

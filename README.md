@@ -247,9 +247,6 @@ python gui/quick_gui.py
 │   ├── pipeline_core.py        # 与界面无关的管线核心（COLMAP/训练/产物收取）
 │   ├── detect_gpu.py           # Vulkan 设备检测（独显/核显自动适配）
 │   └── quick_gui_config.json   # 工具路径配置（首次保存后生成）
-├── docs/
-│   ├── 基于Vulkan的轻量化三维高斯重建与实时渲染系统项目计划书.md
-│   └── 日志术语对照表.md
 ├── tools/             # 第三方工具（需自行下载，见上）
 │   ├── colmap-x64-windows-cuda/
 │   ├── colmap-x64-windows-nocuda/

@@ -731,7 +731,7 @@ class TestProgressSpans(unittest.TestCase):
         self.assertEqual(self.got[-1][0], 0.3)
 
     def test_colmap_registration_line_drives_progress(self):
-        """真实日志行格式（docs/日志术语对照表.md 里那种）必须能认出来。
+        """真实日志行格式（对照 colmap.exe 的格式串核实过的那种）必须能认出来。
 
         括号里的 num_reg_frames 才是已定位张数，所以分子取 96 而不是 #64。
         """
