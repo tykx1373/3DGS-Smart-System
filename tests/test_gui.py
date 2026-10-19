@@ -979,6 +979,18 @@ class TestVersionSingleSource(unittest.TestCase):
         self.assertNotIn("$AppVersion = '", ps)
         self.assertIn("gui\\app_version.py", ps)
 
+    def test_changelog_top_entry_is_current_version(self):
+        """CHANGELOG 最上面一节必须就是当前版本号。
+
+        版本号同时活在 app_version.py、CHANGELOG 标题、git 标签和 release 名上，
+        少改任何一处都会让人对不上账：发出去的包说是 2.3.2，发布说明还停在上一版。
+        """
+        from app_version import APP_VERSION
+        with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
+            heads = [ln[3:].strip() for ln in f if ln.startswith("## ")]
+        self.assertTrue(heads, "CHANGELOG 里找不到「## 版本号」小节标题")
+        self.assertEqual(heads[0].split()[0], APP_VERSION)
+
     def test_diagnostics_report_carries_version(self):
         import diagnostics as d
         from app_version import APP_VERSION
