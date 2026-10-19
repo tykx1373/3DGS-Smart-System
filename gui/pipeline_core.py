@@ -700,6 +700,7 @@ class PipelineCore:
             self.current_proc = subprocess.Popen(
                 cmd_list, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", env=env, cwd=cwd,
+                creationflags=syscheck.NO_WINDOW,
             )
         except Exception as e:
             self._log(f"[FAIL] 启动失败: {e}")
@@ -821,7 +822,8 @@ class PipelineCore:
                 pass
         try:
             res = subprocess.run(["cmd", "/c", "mklink", "/J", link, target],
-                                 capture_output=True, text=True)
+                                 capture_output=True, text=True,
+                                 creationflags=syscheck.NO_WINDOW)
             if res.returncode == 0:
                 return True
             self._log(f"[FAIL] mklink 失败: {res.stderr.strip() or res.stdout.strip()}")
@@ -1114,6 +1116,7 @@ if __name__ == "__main__":
                 [vksp_py, "-u", detect_script, spv_dir],
                 capture_output=True, text=True, timeout=30,
                 cwd=os.path.join(PROJECT_ROOT, "tools", "vksplat", "vksplat"),
+                creationflags=syscheck.NO_WINDOW,
             )
             info = json.loads(result.stdout.strip().splitlines()[-1])
             return info["device_id"], info["is_integrated"], info["name"]
@@ -1129,6 +1132,7 @@ if __name__ == "__main__":
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command",
                  "(Get-CimInstance Win32_VideoController).Name"],
                 capture_output=True, text=True, timeout=15,
+                creationflags=syscheck.NO_WINDOW,
             )
             return "nvidia" in (result.stdout or "").lower()
         except Exception:
@@ -1145,7 +1149,8 @@ if __name__ == "__main__":
             out = subprocess.run(
                 ["nvidia-smi", "--query-gpu=memory.total",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=10)
+                capture_output=True, text=True, timeout=10,
+                creationflags=syscheck.NO_WINDOW)
             if out.returncode == 0:
                 vals = [int(t) for t in (out.stdout or "").replace(",", " ").split()
                         if t.strip().isdigit()]
@@ -1158,7 +1163,8 @@ if __name__ == "__main__":
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command",
                  "(Get-CimInstance Win32_VideoController | "
                  "Measure-Object -Property AdapterRAM -Maximum).Maximum"],
-                capture_output=True, text=True, timeout=15)
+                capture_output=True, text=True, timeout=15,
+                creationflags=syscheck.NO_WINDOW)
             s = (out.stdout or "").strip()
             if s.isdigit() and int(s) > 0:
                 return int(s) // (1024 * 1024)
@@ -1275,7 +1281,8 @@ if __name__ == "__main__":
         try:
             r = subprocess.run(
                 [colmap_exe, "model_analyzer", "--path", sparse_zero],
-                capture_output=True, text=True, timeout=120, env=colmap_env)
+                capture_output=True, text=True, timeout=120, env=colmap_env,
+                creationflags=syscheck.NO_WINDOW)
         except Exception as e:
             self._log(f"[WARN] 注册率检查失败（不影响训练）: {e}")
             return

@@ -20,6 +20,8 @@ from datetime import datetime
 # 每个日志文件最多收这么多行（取尾部），避免整包过大
 LOG_TAIL_LINES = 3000
 MAX_LOG_FILES = 3
+# 诊断包是后台跑的，别在 GUI 旁边再弹一个控制台窗口
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 # 安装版（根目录有启动器）与开发仓库给出不同的修复指引
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -76,14 +78,17 @@ _EXIT_CODE_HINTS = {
     3221225477: ("进程崩溃：访问违例（0xC0000005）",
                  "多半与显卡驱动或显存有关：更新驱动、把质量档位调低后重试"),
     3221225725: ("进程崩溃：栈溢出（0xC00000FD）", "导出诊断包发出来，便于定位"),
+    3221226505: ("COLMAP 自己崩了（0xC0000409，程序内部错误），跟你的照片无关",
+                 "先直接重跑一次，这类崩溃多为偶发；每次都崩的话，在「设置」里把 COLMAP "
+                 "换成 noCUDA 版（tools\\colmap-x64-windows-nocuda\\COLMAP.bat）再试"),
     3221225786: ("进程被中断（0xC000013A，通常是按了 Ctrl+C 或被关闭）",
                  "重新运行即可；若是点「停止」导致的，可忽略"),
 }
 
 _COLMAP_FALLBACK = (
-    "COLMAP 没能完成这一步",
-    "照片重叠不够或纹理太少是常见原因：同一位置多拍几张、相邻照片重叠 60% 以上，"
-    "然后删掉工作区的 database.db 与 sparse 目录重跑")
+    "COLMAP 没能完成这一步（具体原因没认出来）",
+    "先直接重跑一次——COLMAP 失败里不少是偶发的。反复失败再考虑照片本身"
+    "（同一位置多拍几张、相邻照片重叠 60% 以上），或在「设置」里改用 noCUDA 版 COLMAP")
 
 
 def explain_failure(returncode, output, colmap=False):
@@ -163,7 +168,8 @@ def run_doctor(project_root, python_exe=None, timeout=90):
     try:
         r = subprocess.run([python_exe or sys.executable, doctor, "--json"],
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, cwd=project_root)
+                           errors="replace", timeout=timeout, cwd=project_root,
+                           creationflags=_NO_WINDOW)
     except Exception:
         return None
     try:

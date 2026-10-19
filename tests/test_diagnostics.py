@@ -57,9 +57,23 @@ class TestExplainFailure(unittest.TestCase):
         hint = d.explain_failure(3221225477, "")
         self.assertIn("0xC0000005", hint[0])
 
-    def test_colmap_falls_back_to_shooting_advice(self):
+    def test_colmap_falls_back_to_retry_not_photo_blame(self):
+        """COLMAP 认不出原因的失败，第一建议是重跑，不是"你照片不行"。
+
+        真实教训：安装版里 COLMAP 崩在特征提取（0xC0000409），旧兜底文案
+        开口就是"照片重叠不够或纹理太少"，而同一批照片第二次跑注册率 100%。
+        """
         hint = d.explain_failure(1, "", colmap=True)
-        self.assertIn("重叠", hint[1])
+        self.assertIn("重跑", hint[1])
+        self.assertIn("重叠", hint[1])          # 照片因素仍在，但排在后面
+        self.assertNotIn("照片重叠不够或纹理太少是常见原因", hint[1])
+
+    def test_colmap_crash_code_says_it_is_not_the_photos(self):
+        """0xC0000409 是 COLMAP 自己崩了，必须明说跟照片无关。"""
+        hint = d.explain_failure(3221226505, "", colmap=True)
+        self.assertIn("0xC0000409", hint[0])
+        self.assertIn("照片无关", hint[0])
+        self.assertIn("noCUDA", hint[1])
 
     def test_vkgs_failure_gets_no_colmap_advice(self):
         self.assertIsNone(d.explain_failure(1, "", colmap=False))

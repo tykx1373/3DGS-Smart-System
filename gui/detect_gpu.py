@@ -20,7 +20,9 @@ except Exception as e:
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True
+        capture_output=True, text=True,
+        # GUI 调用时不要弹控制台窗口
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
     output = result.stdout + result.stderr
     # 去掉 ANSI 颜色码

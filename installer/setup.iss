@@ -84,6 +84,10 @@ Source: "{#SrcRoot}LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 ; ---- 许可证与第三方声明 ----
 Source: "licenses\*"; DestDir: "{app}\licenses"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+; 应用图标：快捷方式用的是 EXE 内嵌资源，但任务栏按钮要运行时能读到窗口图标文件，
+; 所以随包一份放到 gui\ 下（quick_gui.py 的 ICON_CANDIDATES 第一项就是它）。
+Source: "app.ico"; DestDir: "{app}\gui"; Flags: ignoreversion
+
 ; ---- 应用代码与工具链 ----
 Source: "{#SrcRoot}gui\*"; DestDir: "{app}\gui"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "__pycache__,*.pyc,*.pyo,quick_gui_config.json"
 ; tools 基础部分（含必装的 noCUDA 版 COLMAP）：排除可选的 CUDA 版目录，

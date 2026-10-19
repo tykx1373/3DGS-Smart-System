@@ -63,8 +63,14 @@ class CheckResult:
 
 
 # --------------------------------------------------------------- utilities ----
+# GUI 由 pythonw 启动，子进程默认各弹一个控制台窗口（用户看到的就是"每跑一步闪一个
+# 黑框"）。所有纯后台探测一律不显示窗口；需要用户看的（VKGS 查看器、资源管理器）不加。
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
 def _run(cmd, timeout=15):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          creationflags=NO_WINDOW)
 
 
 def _powershell(script, timeout=12):

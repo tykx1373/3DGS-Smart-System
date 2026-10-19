@@ -316,6 +316,75 @@ class QtGuiTestCase(unittest.TestCase):
         self.assertEqual(got[-1][0], 0.65)
         self.assertIn("总进度 65%", got[-1][1])
 
+    def test_share_splat_actually_generates_file(self):
+        """端到端跑 share_splat 本身。
+
+        之前的测试把 win.share_splat 整个换成假函数，结果它一调用就
+        UnboundLocalError（嵌套函数里给 target 赋值，使它变成局部变量）
+        也没被抓到 —— 这条就是钉住那个真实路径。
+        """
+        import struct
+        root = tempfile.mkdtemp(prefix="share_")
+        ply = os.path.join(root, "vksplat_5000steps_fast.ply")
+        props = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                 "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+        with open(ply, "wb") as f:
+            f.write(("ply\nformat binary_little_endian 1.0\nelement vertex 2\n"
+                     + "".join("property float %s\n" % p for p in props)
+                     + "end_header\n").encode("ascii"))
+            for _ in range(2):
+                f.write(struct.pack("<14f", 1, 2, 3, .5, .5, .5, 2, -2, -2, -2, 1, 0, 0, 0))
+        toasts = []
+        orig_toast, orig_popen = qg.Toast.show_toast, qg.subprocess.Popen
+        qg.Toast.show_toast = staticmethod(lambda parent, title, msg, kind, ms: toasts.append((title, msg)))
+        qg.subprocess.Popen = lambda *a, **k: None
+        called = {"n": 0}
+
+        def fake_confirm(*a, **k):
+            called["n"] += 1
+            return True
+
+        orig_confirm = qg.confirm
+        qg.confirm = fake_confirm
+        try:
+            self.win.share_splat(ply)
+            deadline = time.time() + 20
+            while time.time() < deadline and not called["n"]:
+                _app.processEvents()
+                time.sleep(0.02)
+            self.assertEqual(called["n"], 1, "分享成功的提示没出现")
+            # 必须在这里把队列里的事件跑完再恢复 confirm：share_done 是排队信号，
+            # 若留到 tearDown 才投递，就会弹出真模态框把整个测试会话卡死。
+            for _ in range(5):
+                _app.processEvents()
+        finally:
+            qg.Toast.show_toast, qg.subprocess.Popen = orig_toast, orig_popen
+            qg.confirm = orig_confirm
+        self.assertEqual([t for t in toasts if t[0] == "分享失败"], [])
+        self.assertTrue(os.path.isfile(os.path.join(root, "vksplat_5000steps_fast.splat")))
+
+    def test_find_app_icon_prefers_installed_layout(self):
+        root = tempfile.mkdtemp(prefix="icon_")
+        self.assertIsNone(qg.find_app_icon(root))          # 哪儿都没有
+        os.makedirs(os.path.join(root, "installer"))
+        dev = os.path.join(root, "installer", "app.ico")
+        open(dev, "wb").close()
+        self.assertEqual(qg.find_app_icon(root), dev)      # 开发树
+        os.makedirs(os.path.join(root, "gui"))
+        shipped = os.path.join(root, "gui", "app.ico")
+        open(shipped, "wb").close()
+        self.assertEqual(qg.find_app_icon(root), shipped)  # 装机版优先读 gui/
+
+    def test_repo_has_icon_for_dev_tree(self):
+        """开发树里图标必须存在，否则本地跑根本看不到任务栏图标问题。"""
+        self.assertTrue(os.path.isfile(qg.find_app_icon()))
+
+    def test_apply_app_identity_sets_window_icon(self):
+        from PySide6.QtGui import QIcon
+        _app.setWindowIcon(QIcon())                        # 先清成空图标
+        qg.apply_app_identity(_app)
+        self.assertFalse(_app.windowIcon().isNull())
+
     def test_picking_images_prefills_workspace_name(self):
         root = tempfile.mkdtemp(prefix="wsfill_")
         imgs = os.path.join(root, "garden")

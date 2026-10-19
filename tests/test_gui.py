@@ -793,5 +793,50 @@ class TestPhotoPrecheck(unittest.TestCase):
         self.assertIn("128", text)
 
 
+class TestNoConsoleWindows(unittest.TestCase):
+    """GUI 启动的后台子进程不许弹控制台窗口 —— 用户看到的"每跑一步闪一个黑框"
+    就是 pythonw 启动子进程时默认带出来的控制台。"""
+
+    def test_run_cmd_passes_no_window_flag(self):
+        app = _bare_app()
+        app._log = lambda t: None
+        app.stop_flag = False
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = iter([])
+
+            def wait(self):
+                return 0
+
+        def fake_popen(cmd, **kw):
+            seen.update(kw)
+            return FakeProc()
+
+        orig = q.subprocess.Popen
+        q.subprocess.Popen = fake_popen
+        try:
+            self.assertTrue(app.run_cmd(["colmap.exe", "mapper"]))
+        finally:
+            q.subprocess.Popen = orig
+        self.assertIn("creationflags", seen)
+        expect = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_WINDOW
+        self.assertEqual(seen["creationflags"], expect)
+
+    def test_syscheck_constant_matches_platform(self):
+        import syscheck
+        self.assertEqual(syscheck.NO_WINDOW,
+                         0x08000000 if sys.platform == "win32" else 0)
+
+    def test_viewer_launch_is_not_hidden(self):
+        """VKGS 查看器和资源管理器是要用户看的，不能顺手一起藏掉。"""
+        with open(os.path.join(ROOT, "gui", "pipeline_core.py"), encoding="utf-8") as f:
+            src = f.read()
+        line = [l for l in src.splitlines() if "Popen([vkgs" in l]
+        self.assertEqual(len(line), 1)
+        self.assertNotIn("NO_WINDOW", line[0])
+
+
 if __name__ == "__main__":
     unittest.main()

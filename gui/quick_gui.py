@@ -15,7 +15,7 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QUrl
-from PySide6.QtGui import QFont, QDesktopServices
+from PySide6.QtGui import QFont, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QButtonGroup,
     QFileDialog, QDialog, QAbstractItemView, QListWidget, QStackedWidget,
@@ -50,6 +50,10 @@ SAMPLE_SUBDIR = os.path.join("sample", "south-building", "images")
 SAMPLE_DATASET_NAME = "south-building"
 # 少于这个张数 COLMAP 基本定位不出来，不配当新手的「第一次成功体验」。
 SAMPLE_MIN_IMAGES = 20
+
+# 任务栏/窗口图标候选路径（装机版把 app.ico 放到 gui/ 下，开发树在 installer/ 下）
+ICON_CANDIDATES = (os.path.join("gui", "app.ico"),
+                   os.path.join("installer", "app.ico"), "app.ico")
 
 
 # --------------------------------------------------------------- Var 适配 ----
@@ -1302,12 +1306,14 @@ class MainWindow(QMainWindow, PipelineCore):
 
         def work():
             try:
+                # 不给 target 赋值：那会让它变成 work() 的局部变量，
+                # 上面那行 isfile(target) 直接 UnboundLocalError。
+                # _export_splat 就是写到 dest=target，无需再取返回值。
                 if not os.path.isfile(target):
                     made = self._export_splat(ply_path, dest=target)
                     if not made or not os.path.isfile(made):
                         self.sig.share_done.emit("", "分享版生成失败，详见日志。")
                         return
-                    target = made
                 self.sig.share_done.emit(target, "")
             except Exception as e:
                 self.sig.share_done.emit("", f"分享版生成失败: {e}")
@@ -1424,9 +1430,38 @@ class MainWindow(QMainWindow, PipelineCore):
         self.save_options()
 
 
+def find_app_icon(root=None):
+    """找应用图标文件；开发树在 installer/，装机后随包放到 gui/ 下。"""
+    root = root or PROJECT_ROOT
+    for rel in ICON_CANDIDATES:
+        p = os.path.join(root, rel)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def apply_app_identity(app):
+    """设置窗口图标与 AppUserModelID。
+
+    快捷方式的图标来自 EXE 的内嵌资源，但任务栏上的按钮只看**窗口图标**和
+    **AppUserModelID**：两者都不设时，Windows 把窗口算到宿主 pythonw.exe 头上，
+    显示成默认方框——装机后"有图标却不在任务栏显示"就是这么来的。
+    """
+    icon = find_app_icon()
+    if icon:
+        app.setWindowIcon(QIcon(icon))
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("3DGS.Studio")
+        except Exception:
+            pass   # 拿不到就退回默认行为，不该因此启动失败
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("3DGS 快速管线")
+    apply_app_identity(app)
     apply_theme(app)
     w = MainWindow()
     w.show()
