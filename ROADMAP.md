@@ -95,10 +95,12 @@ COLMAP 只能恢复到一个未知相似变换，导出的 PLY 没有米制尺�
       doctor 冒烟，`setup.exe` 仍需本地手跑 `installer/build_setup.ps1`。
       加 tag 触发的 `windows-latest` job 产出 artifact，并自动写 SHA-256 到 Release 正文
       （README 现在让用户自己核对哈希，这步应该由流水线代劳）
-- [ ] **仓库改 public**：目前仍是 private，README「到 Releases 页面下载安装包」对外部
-      访客无效（各版本的 release 只有协作者能下载）。
-      决定暂缓公开，公开前建议顺手确认代码签名是否要先做
-- [ ] setup.exe / 启动器代码签名（当前未签名，首启会有 SmartScreen 提示）
+- [x] **仓库改 public**：2026-10-19 已公开。匿名接口实测 `private=false`、
+      `releases/latest` 返回 v2.3.2、对下载直链取前 1 KB 得到 206 且魔数是 `MZ`
+      （Content-Range 总长与包大小一致），所以 README「到 Releases 页面下载安装包」
+      对外部访客已经成立
+- [ ] setup.exe / 启动器代码签名（当前未签名，首启会有 SmartScreen 提示；公开之后
+      陌生人也会装，这条的优先级比公开前更高）
 - [ ] 无 Python / 无显卡开发包的干净机器（或虚拟机）安装实测
 - [x] Release 资源统一命名为 `3DGS-Studio-windows-x64-Setup-<version>.exe`
       （构建脚本按此命名，2.1.0 起各版本均已一致；一个 release 只放对应版本的一个包）
