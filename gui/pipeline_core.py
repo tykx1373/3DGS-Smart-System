@@ -808,29 +808,67 @@ class PipelineCore:
 
     # -------------------------------------------------------- junction ----
     def _make_junction(self, link, target):
-        target_abs = os.path.abspath(target)
-        if os.path.exists(link):
+        """让 link 指向 target；已就绪就原样复用，绝不删真实目录。
+
+        三个坑都踩过：
+        - 联接不是符号链接，os.path.islink 恒为 False，旧代码因此走 shutil.rmtree
+          去删联接 —— 删不掉（异常被吞），随后 mklink 必然报「文件已存在」，
+          于是「重跑同一个数据集」直接卡在 COLMAP 前。
+        - rmtree 若真生效，删掉的可能是用户自己的照片文件夹。
+        - cmd 的输出是 OEM 代码页，用 text=True 让 subprocess 按 UTF-8 解码会
+          在读取线程里抛 UnicodeDecodeError，最后拿到 None 再 .strip() 崩掉，
+          把真实原因盖成一句看不懂的报错。
+        """
+        target_abs = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+        if os.path.islink(link) or self._is_reparse(link):
+            if os.path.normcase(os.path.realpath(link)) == target_abs:
+                return True                      # 已经指向该去的地方，重跑不该重来
+            self._log("[INFO] 照片文件夹换了，重建工作区里的照片链接。")
             try:
-                link_real = os.path.realpath(link)
-                if os.path.normcase(link_real) == os.path.normcase(target_abs):
-                    return True
-                if os.path.islink(link):
-                    os.unlink(link)
-                else:
-                    shutil.rmtree(link)
-            except Exception:
-                pass
+                self._remove_dir_or_link(link)   # 只移除链接本身
+            except OSError as e:
+                self._log(f"[FAIL] 无法移除旧的照片链接: {e}")
+                return False
+        elif os.path.isdir(link):
+            # 真实目录：里面可能是用户自己放的照片，删不得
+            self._log("[FAIL] 工作区里的 images 是一个普通文件夹，不是程序创建的链接，"
+                      "我不能直接删掉它。")
+            self._notify_failure(
+                "工作区里已经有一个同名的 images 文件夹（不是程序建的链接）",
+                "在「高级选项」里换一个新的工作区名最省事；确认那个文件夹里没有你自己的"
+                "照片的话，也可以手动删掉它再重试。")
+            return False
+
+        res = self._run_text(["cmd", "/c", "mklink", "/J", link, target])
+        if res is None or res.returncode != 0:
+            self._log("[FAIL] 创建工作区链接失败，程序会在下一步给出建议。")
+            self._notify_failure(
+                "无法在工作区里建立照片链接"
+                + (f"：{(res.stdout or '').strip()[:120]}" if res is not None else ""),
+                "多半是磁盘权限或路径太长：把项目放到像 D:\\3DGS 这样的短英文路径，"
+                "或删掉该工作区目录后重试")
+            return False
+        return True
+
+    @staticmethod
+    def _run_text(cmd):
+        """跑一条命令并拿到**一定能解码**的输出；cmd 的内部输出不该影响主流程。"""
         try:
-            res = subprocess.run(["cmd", "/c", "mklink", "/J", link, target],
-                                 capture_output=True, text=True,
-                                 creationflags=syscheck.NO_WINDOW)
-            if res.returncode == 0:
-                return True
-            self._log(f"[FAIL] mklink 失败: {res.stderr.strip() or res.stdout.strip()}")
-            return False
-        except Exception as e:
-            self._log(f"[FAIL] 无法创建目录联接: {e}")
-            return False
+            r = subprocess.run(cmd, capture_output=True, timeout=30,
+                               creationflags=syscheck.NO_WINDOW)
+        except Exception:
+            return None
+
+        def dec(b):
+            for enc in ("utf-8", "gbk", "cp437", "latin-1"):
+                try:
+                    return b.decode(enc)
+                except (UnicodeDecodeError, ValueError):
+                    continue
+            return b.decode("utf-8", "replace")
+
+        r.stdout, r.stderr = dec(r.stdout or b""), dec(r.stderr or b"")
+        return r
 
     @staticmethod
     def _is_reparse(path):

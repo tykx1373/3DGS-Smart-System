@@ -6,6 +6,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -836,6 +837,67 @@ class TestNoConsoleWindows(unittest.TestCase):
         line = [l for l in src.splitlines() if "Popen([vkgs" in l]
         self.assertEqual(len(line), 1)
         self.assertNotIn("NO_WINDOW", line[0])
+
+
+class TestMakeJunction(unittest.TestCase):
+    """工作区照片链接：重跑同一数据集必须原样复用，且绝不删真实目录。"""
+
+    def setUp(self):
+        self.app = _bare_app()
+        self.app.init_core()
+        self.logs = []
+        self.app._log = self.logs.append
+        self.app._notify_failure = lambda c, a: self.logs.append(("CARD", c, a))
+        self.tmp = tempfile.mkdtemp(prefix="link_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.photos = os.path.join(self.tmp, "photos")
+        os.makedirs(self.photos)
+        open(os.path.join(self.photos, "a.jpg"), "w").close()
+
+    def _link(self, name="images"):
+        return os.path.join(self.tmp, name)
+
+    @unittest.skipIf(sys.platform != "win32", "目录联接是 Windows 特性")
+    def test_same_target_is_reused_not_failed(self):
+        """用户报的场景：训练过一次再点开始，旧代码在这里报「mklink 失败：文件已存在」
+        并把整个 COLMAP 阶段中止。"""
+        link = self._link()
+        subprocess.run(["cmd", "/c", "mklink", "/J", link, self.photos],
+                       capture_output=True)
+        self.assertTrue(self.app._make_junction(link, self.photos))
+        self.assertEqual(self.logs, [])
+        self.assertEqual(os.listdir(self.photos), ["a.jpg"])
+
+    @unittest.skipIf(sys.platform != "win32", "目录联接是 Windows 特性")
+    def test_switching_dataset_rebuilds_link_and_keeps_sources(self):
+        link = self._link()
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        open(os.path.join(other, "b.jpg"), "w").close()
+        subprocess.run(["cmd", "/c", "mklink", "/J", link, self.photos],
+                       capture_output=True)
+        self.assertTrue(self.app._make_junction(link, other))
+        self.assertEqual(os.listdir(self.photos), ["a.jpg"])   # 两个源目录都不能被删
+        self.assertEqual(os.listdir(other), ["b.jpg"])
+        self.assertTrue(any("换了" in t for t in self.logs if isinstance(t, str)))
+
+    def test_real_directory_is_never_deleted(self):
+        """link 位置是真实文件夹时可能装着用户自己的照片，删不得。"""
+        link = self._link()
+        os.makedirs(link)
+        open(os.path.join(link, "mine.jpg"), "w").close()
+        self.assertFalse(self.app._make_junction(link, self.photos))
+        self.assertEqual(os.listdir(link), ["mine.jpg"])
+        self.assertTrue(any(isinstance(t, tuple) for t in self.logs))
+
+    def test_run_text_decodes_ansi_output_without_crashing(self):
+        """cmd 输出是 OEM 代码页；旧写法让 subprocess 按 UTF-8 解码，
+        结果 stderr 变成 None，再 .strip() 就把真实原因盖掉了。"""
+        r = q.PipelineCore._run_text(["cmd", "/c", "echo", "中文测试"])
+        self.assertIsNotNone(r)
+        self.assertEqual(r.returncode, 0)
+        self.assertIsInstance(r.stdout, str)
+        self.assertIn("中文测试", r.stdout)
 
 
 if __name__ == "__main__":
