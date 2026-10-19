@@ -840,7 +840,7 @@ class TestNoConsoleWindows(unittest.TestCase):
 
 
 class TestMakeJunction(unittest.TestCase):
-    """工作区照片链接：重跑同一数据集必须原样复用，且绝不删真实目录。"""
+    """工作区照片接入：重跑必须复用，绝不删真实目录，联接读不通要能退回复制。"""
 
     def setUp(self):
         self.app = _bare_app()
@@ -857,16 +857,65 @@ class TestMakeJunction(unittest.TestCase):
     def _link(self, name="images"):
         return os.path.join(self.tmp, name)
 
+    def _mklink(self, link):
+        subprocess.run(["cmd", "/c", "mklink", "/J", link, self.photos],
+                       capture_output=True)
+
     @unittest.skipIf(sys.platform != "win32", "目录联接是 Windows 特性")
     def test_same_target_is_reused_not_failed(self):
         """用户报的场景：训练过一次再点开始，旧代码在这里报「mklink 失败：文件已存在」
         并把整个 COLMAP 阶段中止。"""
         link = self._link()
-        subprocess.run(["cmd", "/c", "mklink", "/J", link, self.photos],
-                       capture_output=True)
-        self.assertTrue(self.app._make_junction(link, self.photos))
+        self._mklink(link)
+        self.assertTrue(self.app._ensure_images_dir(link, self.photos))
         self.assertEqual(self.logs, [])
         self.assertEqual(os.listdir(self.photos), ["a.jpg"])
+
+    @unittest.skipIf(sys.platform != "win32", "目录联接是 Windows 特性")
+    def test_reuse_does_not_traverse_the_link(self):
+        """别人电脑上的现场：系统禁止遍历程序建的联接（WinError 448）。
+
+        os.path.realpath 会真的去遍历，448 不在 CPython 容忍的错误码里、直接抛异常，
+        于是「选好照片就崩」。复用判断必须走 os.readlink，所以这里让 realpath 一被
+        调用就抛，跑通才说明数据通路没押在联接可用性上。
+        """
+        link = self._link()
+        self._mklink(link)
+        real_realpath = os.path.realpath
+
+        def boom(path, *a, **kw):
+            raise OSError(448, "无法遍历路径，因为它包含不受信任的装入点。", path)
+
+        os.path.realpath = boom
+        try:
+            self.assertTrue(self.app._ensure_images_dir(link, self.photos))
+        finally:
+            os.path.realpath = real_realpath
+        self.assertEqual(os.listdir(self.photos), ["a.jpg"])
+
+    @unittest.skipIf(sys.platform != "win32", "目录联接是 Windows 特性")
+    def test_unreadable_link_falls_back_to_copying_photos(self):
+        link = self._link()
+        self._mklink(link)
+        self.app._dir_readable = lambda path: False
+        self.assertTrue(self.app._ensure_images_dir(link, self.photos))
+        self.assertFalse(q.PipelineCore._is_reparse(link))
+        self.assertIn("a.jpg", os.listdir(link))
+        self.assertEqual(os.listdir(self.photos), ["a.jpg"])    # 原照片夹不能被动
+        self.assertTrue(any("复制" in t for t in self.logs if isinstance(t, str)))
+
+    @unittest.skipIf(sys.platform != "win32", "目录联接是 Windows 特性")
+    def test_copied_photos_dir_is_reused_on_rerun(self):
+        """复制出来的 images 是普通文件夹：第二次要认得出是自己建的，不能要求用户
+        换工作区名，也不能再复制一遍。"""
+        link = self._link()
+        self._mklink(link)
+        self.app._dir_readable = lambda path: False
+        self.assertTrue(self.app._ensure_images_dir(link, self.photos))
+        del self.app._dir_readable                              # 这台机器恢复正常
+        self.logs.clear()
+        self.assertTrue(self.app._ensure_images_dir(link, self.photos))
+        self.assertEqual(self.logs, [])
 
     @unittest.skipIf(sys.platform != "win32", "目录联接是 Windows 特性")
     def test_switching_dataset_rebuilds_link_and_keeps_sources(self):
@@ -874,9 +923,8 @@ class TestMakeJunction(unittest.TestCase):
         other = os.path.join(self.tmp, "other")
         os.makedirs(other)
         open(os.path.join(other, "b.jpg"), "w").close()
-        subprocess.run(["cmd", "/c", "mklink", "/J", link, self.photos],
-                       capture_output=True)
-        self.assertTrue(self.app._make_junction(link, other))
+        self._mklink(link)
+        self.assertTrue(self.app._ensure_images_dir(link, other))
         self.assertEqual(os.listdir(self.photos), ["a.jpg"])   # 两个源目录都不能被删
         self.assertEqual(os.listdir(other), ["b.jpg"])
         self.assertTrue(any("换了" in t for t in self.logs if isinstance(t, str)))
@@ -886,7 +934,7 @@ class TestMakeJunction(unittest.TestCase):
         link = self._link()
         os.makedirs(link)
         open(os.path.join(link, "mine.jpg"), "w").close()
-        self.assertFalse(self.app._make_junction(link, self.photos))
+        self.assertFalse(self.app._ensure_images_dir(link, self.photos))
         self.assertEqual(os.listdir(link), ["mine.jpg"])
         self.assertTrue(any(isinstance(t, tuple) for t in self.logs))
 

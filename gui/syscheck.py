@@ -395,6 +395,60 @@ def check_disk(min_free_gb=5.0):
     return CheckResult("磁盘空间", OK, detail)
 
 
+def _remove_probe(path):
+    """清掉自检探针：联接只移除链接本身，普通目录整个删掉。"""
+    try:
+        if getattr(os.lstat(path), "st_reparse_tag", 0) or os.path.islink(path):
+            os.rmdir(path)
+        elif os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def check_link_traversal():
+    """这台机器允不允许程序读取自己建立的目录联接。
+
+    之所以要实测这一条：Windows 在某些机器上把程序新建的联接判成「不受信任的装入点」
+    （WinError 448），联接建得出来、`mklink` 也返回成功，一列目录就抛异常。别的检查
+    全绿却在这一步崩，是最难解释的一种失败，所以自检必须自己走一遍这条路。
+    读不通只算 WARN —— 管线会退回复制照片，能跑，只是多占磁盘。
+    """
+    probe_dir = os.path.join(PROJECT_ROOT, ".selfcheck_probe")
+    probe_link = os.path.join(PROJECT_ROOT, ".selfcheck_probe_link")
+    if os.name != "nt":
+        return CheckResult("照片链接", OK, "非 Windows，不涉及目录联接")
+    try:
+        _remove_probe(probe_link)
+        shutil.rmtree(probe_dir, ignore_errors=True)
+        os.makedirs(probe_dir)
+        with open(os.path.join(probe_dir, ".probe"), "w") as f:
+            f.write("1")
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", probe_link, probe_dir],
+                           capture_output=True, timeout=30, creationflags=NO_WINDOW)
+        if r.returncode != 0:
+            return CheckResult("照片链接", WARN, "这台机器不允许程序建立目录联接",
+                               "不影响使用：程序会把照片复制一份到工作区，"
+                               "只是多占一点磁盘和时间")
+        try:
+            names = os.listdir(probe_link)
+        except OSError as e:
+            return CheckResult(
+                "照片链接", WARN,
+                f"联接建得出来但系统不允许读取（WinError {getattr(e, 'winerror', '?')}）",
+                "不影响使用：程序会把照片复制一份到工作区，模型效果一样，"
+                "只是多占约照片那么大的磁盘")
+        if ".probe" not in names:
+            return CheckResult("照片链接", WARN, "联接里看不到照片（内容为空）",
+                               "程序会把照片复制一份到工作区，不影响出模型")
+        return CheckResult("照片链接", OK, "程序可以自己建立并读取照片链接")
+    except Exception as e:
+        return CheckResult("照片链接", WARN, f"未能测试: {e}")
+    finally:
+        _remove_probe(probe_link)
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
 def check_tdr_delay(devices=None):
     """Windows TDR：GPU 单个命令挂起超过 TdrDelay 秒会被驱动重置（默认 2 秒）。
     核显跑 Vulkan 长 kernel 时尤其容易触发，表现为训练崩溃 / 设备丢失。"""
@@ -445,6 +499,7 @@ def run_all(colmap_path=None, vkgs_exe=None):
         check_colmap(colmap_path),
         check_vkgs(vkgs_exe),
         check_disk(),
+        check_link_traversal(),
     ]
 
 

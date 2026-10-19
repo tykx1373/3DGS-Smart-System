@@ -36,6 +36,13 @@ REPAIR_HINT = ("请重新运行安装程序并选择修复" if INSTALL_MODE
 # 正则都对应 VkSplat / COLMAP 里真实存在的报错原文（见 tools/vksplat/vksplat/src），
 # 顺序即优先级：越具体的放前面。命中一条即返回，避免一次报错配出互相矛盾的建议。
 _FAILURE_HINTS = (
+    # Windows 会按机器策略禁止遍历「程序新建的目录联接」（WinError 448）。2.3.1 把
+    # 联接放进了数据通路，在这种机器上表现为选完照片就崩；2.3.2 起读不通会自动退回
+    # 复制照片。仍出现这条，说明复制那步也没成（磁盘满 / 权限）。
+    (r"WinError 448|untrusted mount point",
+     "这台机器不允许程序读取它自己建立的图片链接（Windows 安全策略）",
+     "确认用的是 2.3.2 及以后的版本（会自动改用照片副本）；并删掉该工作区目录后重跑，"
+     "保证项目所在磁盘还有照片文件夹那么大的空间"),
     # RAM 与 VRAM 两条必须互斥：VkSplat 原文分别是
     # "Failed to allocate staging buffer memory ... out of RAM" 和
     # "Failed to allocate buffer memory ... out of VRAM"，注意前者多了 staging。

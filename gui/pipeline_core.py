@@ -115,6 +115,9 @@ IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 EXIF_MARKER = ".orientation_fixed"
 # 曝光校正副本的标记：开启校正后旧的未校正副本据此自动失效重建
 EXPOSURE_MARKER = ".exposure_matched"
+# 标记 images 目录是「联接读不通时程序自己复制出来的照片副本」，下次运行才敢复用，
+# 也才敢确认这个普通文件夹不是用户自己放进去的。
+IMAGES_COPY_MARKER = ".images_copied_from"
 
 # 质量档位 -> (训练步数, 说明)。档位只给默认值，步数/分辨率都能在高级选项里覆盖。
 QUALITY_PRESETS = {
@@ -624,10 +627,18 @@ class PipelineCore:
 
     # ------------------------------------------------------------- helpers ----
     def _count_images(self, folder):
+        """数文件夹里的可训练照片；读不动就当 0，绝不把异常抛给选照片那一步。
+
+        这个数只用于估算耗时和判断「工作区跟数据集对不对得上」，读失败时给出
+        0 比让整条流程崩掉更符合它的分量。
+        """
         if not folder or not os.path.isdir(folder):
             return 0
-        return sum(1 for f in os.listdir(folder)
-                   if f.lower().endswith(IMAGE_EXTS))
+        try:
+            return sum(1 for f in os.listdir(folder)
+                       if f.lower().endswith(IMAGE_EXTS))
+        except OSError:
+            return 0
 
     def _count_selected_images(self):
         """当前选择文件夹里的可训练照片数；与 _count_images 同口径（复用 IMAGE_EXTS）。
@@ -806,31 +817,52 @@ class PipelineCore:
             except Exception:
                 pass   # 面板显示失败不能反过来影响管线
 
-    # -------------------------------------------------------- junction ----
-    def _make_junction(self, link, target):
-        """让 link 指向 target；已就绪就原样复用，绝不删真实目录。
+    # ---------------------------------------------------- 工作区照片接入 ----
+    def _ensure_images_dir(self, images_dir, src_dir):
+        """保证 images_dir 是一个「程序能读」的照片目录；联接读不通就退回复制。
 
-        三个坑都踩过：
-        - 联接不是符号链接，os.path.islink 恒为 False，旧代码因此走 shutil.rmtree
-          去删联接 —— 删不掉（异常被吞），随后 mklink 必然报「文件已存在」，
-          于是「重跑同一个数据集」直接卡在 COLMAP 前。
+        旧做法只建目录联接（零拷贝），把联接直接当数据通路。但联接能不能被**遍历**
+        取决于这台机器的策略：实测有机器上 `mklink /J` 返回成功、联接也确实在那里，
+        一列目录就抛 WinError 448（不受信任的装入点），COLMAP 与训练都读不到照片。
+        所以联接只当快路径试一次，建完必须实测能不能列出文件；读不通就复制副本，
+        宁可多占磁盘，也不要让用户在那台机器上跑不起来。
+
+        另外三个坑（都踩过）：
+        - 联接不是符号链接，os.path.islink 恒为 False，判定要看 lstat 的 reparse tag；
+          旧代码因此走 rmtree 去删联接，删不掉，随后 mklink 必然报「文件已存在」。
         - rmtree 若真生效，删掉的可能是用户自己的照片文件夹。
-        - cmd 的输出是 OEM 代码页，用 text=True 让 subprocess 按 UTF-8 解码会
-          在读取线程里抛 UnicodeDecodeError，最后拿到 None 再 .strip() 崩掉，
-          把真实原因盖成一句看不懂的报错。
+        - cmd 的输出是 OEM 代码页，让 subprocess 按 UTF-8 解码会在读取线程里抛
+          UnicodeDecodeError，最后拿到 None 再 .strip()，把真实原因盖成一句看不懂
+          的报错。
         """
-        target_abs = os.path.normcase(os.path.realpath(os.path.abspath(target)))
-        if os.path.islink(link) or self._is_reparse(link):
-            if os.path.normcase(os.path.realpath(link)) == target_abs:
-                return True                      # 已经指向该去的地方，重跑不该重来
-            self._log("[INFO] 照片文件夹换了，重建工作区里的照片链接。")
+        src_abs = os.path.normcase(os.path.abspath(src_dir))
+        marker = os.path.join(images_dir, IMAGES_COPY_MARKER)
+
+        if self._is_reparse(images_dir):
+            link_to = self._link_target(images_dir)
+            if link_to == src_abs and self._dir_readable(images_dir):
+                return True                       # 指向对、也读得动，重跑不该重来
+            if link_to != src_abs:
+                self._log("[INFO] 照片文件夹换了，重建工作区里的照片链接。")
+            else:
+                self._log("[WARN] 这台机器不允许程序创建的链接被读取，"
+                          "改为把照片复制到工作区。")
             try:
-                self._remove_dir_or_link(link)   # 只移除链接本身
+                self._remove_dir_or_link(images_dir)   # 只移除链接本身
             except OSError as e:
                 self._log(f"[FAIL] 无法移除旧的照片链接: {e}")
                 return False
-        elif os.path.isdir(link):
-            # 真实目录：里面可能是用户自己放的照片，删不得
+        elif os.path.isdir(images_dir):
+            if self._dir_readable(images_dir) and self._copied_from(marker, src_abs):
+                return True                       # 上次复制的副本，继续用
+            if not self._dir_readable(images_dir):
+                self._log(f"[FAIL] 工作区里的 images 读不出来: {images_dir}")
+                self._notify_failure(
+                    "工作区里已有的照片目录读不出来",
+                    "在「高级选项」里换一个新的工作区名最省事；确认那个文件夹里没有你"
+                    "自己的照片的话，也可以手动删掉它再重试。")
+                return False
+            # 真实目录且没有复制标记：里面可能是用户自己放的照片，删不得
             self._log("[FAIL] 工作区里的 images 是一个普通文件夹，不是程序创建的链接，"
                       "我不能直接删掉它。")
             self._notify_failure(
@@ -839,14 +871,113 @@ class PipelineCore:
                 "照片的话，也可以手动删掉它再重试。")
             return False
 
-        res = self._run_text(["cmd", "/c", "mklink", "/J", link, target])
-        if res is None or res.returncode != 0:
-            self._log("[FAIL] 创建工作区链接失败，程序会在下一步给出建议。")
+        res = self._run_text(["cmd", "/c", "mklink", "/J", images_dir, src_dir])
+        if res is not None and res.returncode == 0:
+            if self._dir_readable(images_dir):
+                return True
+            # 建成功却读不了：这台机器禁止遍历程序新建的装入点，退回复制
+            self._log("[WARN] 照片链接建成了但系统不允许读取它（不受信任的装入点），"
+                      "改为把照片复制到工作区。")
+            try:
+                self._remove_dir_or_link(images_dir)
+            except OSError as e:
+                self._log(f"[FAIL] 无法移除读不通的照片链接: {e}")
+                return False
+        else:
+            self._log("[WARN] 建立照片链接失败"
+                      + (f"：{(res.stdout or '').strip()[:120]}" if res is not None else "")
+                      + "，改为把照片复制到工作区。")
+        return self._copy_images(images_dir, src_dir)
+
+    def _copy_images(self, images_dir, src_dir):
+        """把照片原样复制一份进工作区（联接被这台机器禁用时的退路）。"""
+        names = sorted(n for n in os.listdir(src_dir) if n.lower().endswith(IMAGE_EXTS))
+        if not names:
+            self._log(f"[FAIL] 照片文件夹里没有支持的图片: {src_dir}")
+            return False
+
+        tmp_dir = images_dir + ".tmp"
+        if os.path.exists(tmp_dir):
+            self._remove_dir_or_link(tmp_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        done = 0
+        total = 0
+        for name in names:
+            dst = os.path.join(tmp_dir, name)
+            for attempt in range(RENAME_RETRIES):
+                try:
+                    shutil.copy2(os.path.join(src_dir, name), dst)
+                    break
+                except OSError as e:
+                    if attempt == RENAME_RETRIES - 1:
+                        self._log(f"[WARN] 复制失败 {name}: {e}")
+                        dst = None
+            if dst is None:
+                continue
+            total += os.path.getsize(dst)
+            done += 1
+
+        if done == 0:
+            self._remove_dir_or_link(tmp_dir)
+            self._log("[FAIL] 照片一张都没复制成功")
             self._notify_failure(
-                "无法在工作区里建立照片链接"
-                + (f"：{(res.stdout or '').strip()[:120]}" if res is not None else ""),
-                "多半是磁盘权限或路径太长：把项目放到像 D:\\3DGS 这样的短英文路径，"
-                "或删掉该工作区目录后重试")
+                "照片没能复制进工作区（这台机器不允许程序读取自己建的链接，"
+                "只能靠复制）",
+                "多半是磁盘满了或工作区没有写权限：清出空间后重试，或在「高级选项」里"
+                "换个工作区名；仍不行就导出诊断包发出来")
+            return False
+        if done < len(names):
+            self._log(f"[WARN] 有 {len(names) - done} 张照片没能复制，训练只会用到"
+                      f"复制成功的 {done} 张。")
+
+        with open(os.path.join(tmp_dir, IMAGES_COPY_MARKER), "w", encoding="utf-8") as f:
+            f.write(os.path.abspath(src_dir))
+        # 刚写出的文件常被杀毒软件/索引服务短暂占用，改名会偶发 WinError 5
+        for attempt in range(RENAME_RETRIES):
+            try:
+                os.rename(tmp_dir, images_dir)
+                break
+            except OSError as e:
+                if attempt == RENAME_RETRIES - 1:
+                    self._log(f"[FAIL] 无法把照片副本放到位: {e}")
+                    return False
+        self._log(f"[OK] 已把 {done} 张照片复制到工作区（约 {total / 2 ** 20:.0f} MB）。"
+                  "这台机器不允许程序创建的图片链接，复制不影响模型效果。")
+        return True
+
+    @staticmethod
+    def _copied_from(marker, src_abs):
+        """images 目录里是否有「我就是从 src 复制来的」标记（决定能不能复用）。"""
+        try:
+            with open(marker, encoding="utf-8") as f:
+                return os.path.normcase(os.path.abspath(f.read().strip())) == src_abs
+        except OSError:
+            return False
+
+    @staticmethod
+    def _link_target(link):
+        """读联接里存的目标路径，**不跟随联接**。
+
+        不能用 os.path.realpath：它真的会去遍历，被系统拦下时（WinError 448 不在
+        CPython 容忍的错误码名单里）直接抛异常。
+        """
+        try:
+            t = os.readlink(link)
+        except OSError:
+            return None
+        for prefix in ("\\\\?\\", "\\??\\"):
+            if t.startswith(prefix):
+                t = t[len(prefix):]
+        return os.path.normcase(os.path.abspath(t))
+
+    @staticmethod
+    def _dir_readable(path):
+        """能不能真的列出这个目录——联接建得成不代表读得动。"""
+        try:
+            with os.scandir(path) as it:
+                next(it, None)
+        except OSError:
             return False
         return True
 
@@ -1241,9 +1372,9 @@ if __name__ == "__main__":
             return None, None, None
 
         os.makedirs(ws_dir, exist_ok=True)
-        images_link = os.path.join(ws_dir, "images")
-        if not self._make_junction(images_link, img_dir):
-            return None, None, None
+        # COLMAP 直接读用户的真实照片夹：工作区里的 images 只是给训练用的，
+        # 而建在工作区里的联接在某些机器上不允许被遍历（WinError 448），
+        # 没必要让最耗时的重建阶段去赌这台机器的策略。
         # images_2 / images_4 的降采样副本在训练前按需生成（见 run_vksplat_train）
 
         db_path = os.path.join(ws_dir, "database.db")
@@ -1264,7 +1395,7 @@ if __name__ == "__main__":
         if not self.run_cmd([
             colmap_exe, "feature_extractor",
             "--database_path", db_path,
-            "--image_path", images_link,
+            "--image_path", img_dir,
             "--FeatureExtraction.max_image_size", str(max_img),
         ], env=colmap_env, colmap=True):
             return None, None, None
@@ -1299,7 +1430,7 @@ if __name__ == "__main__":
         if not self.run_cmd([
             colmap_exe, "mapper",
             "--database_path", db_path,
-            "--image_path", images_link,
+            "--image_path", img_dir,
             "--output_path", sparse_dir,
         ], env=colmap_env, colmap=True, colmap_total=n_imgs):
             return None, None, None
@@ -1400,25 +1531,27 @@ if __name__ == "__main__":
                 self._log(f"[INFO] 检测到 {len(rotated)} 张带旋转标记（EXIF）的照片，"
                           f"副本将自动纠正方向")
 
-        # 降采样副本幂等生成；旧版本 images_2/images_4 联接原图的工作区也会在此修好。
-        # 曝光校正在生成副本时一并完成（直方图匹配到中间曝光），绝不动用户原图。
+        # 训练读的是工作区里的 <res_dir>，副本一律**从真实照片夹**生成：工作区里那个
+        # images 联接在某些机器上根本不允许被遍历（WinError 448），拿它当源等于把整条
+        # 链路押在联接可用上。降采样副本幂等生成；旧版本把 images_2/images_4 联接回原图
+        # 的工作区也会在此修好。曝光校正一并完成，绝不动用户原图。
         exp_fix = bool(self.exposure_fix_var.get())
         if exp_fix:
             self._log("[INFO] 曝光校正已开启：训练图将统一明暗后再训练。")
+        images_dir = os.path.join(ws_dir, "images")
         if res_dir != "images":
-            src_images = os.path.join(ws_dir, "images")
-            src_images = os.path.realpath(src_images) if os.path.isdir(src_images) else img_dir
-            if os.path.isdir(src_images):
-                self._make_downscaled(os.path.join(ws_dir, res_dir), src_images,
-                                      2 if res_dir == "images_2" else 4,
-                                      rotated_names=rotated, exposure_fix=exp_fix)
+            if not self._make_downscaled(os.path.join(ws_dir, res_dir), img_dir,
+                                         2 if res_dir == "images_2" else 4,
+                                         rotated_names=rotated, exposure_fix=exp_fix):
+                return False
         elif rotated or exp_fix:
             # 高质量档（或开了曝光校正）：vksplat 用 stb_image 读图不认 EXIF，
-            # 把 junction 换成方向归一化的原分辨率副本；COLMAP 读这份也正确。
-            images_link = os.path.join(ws_dir, "images")
-            if os.path.isdir(images_link):
-                self._make_downscaled(images_link, img_dir, 1,
-                                      rotated_names=rotated, exposure_fix=exp_fix)
+            # 用方向归一化的原分辨率副本代替直通的照片目录。
+            if not self._make_downscaled(images_dir, img_dir, 1,
+                                         rotated_names=rotated, exposure_fix=exp_fix):
+                return False
+        elif not self._ensure_images_dir(images_dir, img_dir):
+            return False
 
         if gpu_name == "unknown":
             cap_max = base_cap

@@ -379,6 +379,10 @@ obj/
 # Runtime logs
 logs/
 
+# 自检「照片链接能不能读」用的临时探针（正常会自己删掉，异常中断时别混进提交）
+.selfcheck_probe/
+.selfcheck_probe_link/
+
 # OS files
 Thumbs.db
 ehthumbs.db
