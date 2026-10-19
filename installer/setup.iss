@@ -76,7 +76,7 @@ Source: "{#SrcRoot}{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; ---- 根目录只保留面向用户的文件 ----
 ; doctor.py 必须保留：GUI「导出诊断包」功能会以子进程方式调用 doctor.py --json；
 ; run.bat / download_tools.* / environment.yaml / ROADMAP.md 是开发环境脚手架，不分发；
-; tests/ docs/ 同为开发产物，不分发。
+; tests/ 同为开发产物，不分发。
 Source: "{#SrcRoot}doctor.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -130,7 +130,6 @@ Type: files; Name: "{app}\download_tools.ps1"
 Type: files; Name: "{app}\environment.yaml"
 Type: files; Name: "{app}\ROADMAP.md"
 Type: filesandordirs; Name: "{app}\tests"
-Type: filesandordirs; Name: "{app}\docs"
 
 [UninstallDelete]
 ; 程序目录在运行中会生成 __pycache__ 字节码、.syscheck.json 等清单外文件，
@@ -140,7 +139,6 @@ Type: files; Name: "{app}\.syscheck.json"
 Type: filesandordirs; Name: "{app}\env"
 Type: filesandordirs; Name: "{app}\gui"
 Type: filesandordirs; Name: "{app}\tools"
-Type: filesandordirs; Name: "{app}\docs"
 Type: filesandordirs; Name: "{app}\tests"
 Type: filesandordirs; Name: "{app}\sample"
 Type: filesandordirs; Name: "{app}\licenses"
