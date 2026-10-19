@@ -1444,14 +1444,14 @@ def find_app_icon(root=None):
     return None
 
 
-def apply_app_identity(app):
+def apply_app_identity(app, root=None):
     """设置窗口图标与 AppUserModelID。
 
     快捷方式的图标来自 EXE 的内嵌资源，但任务栏上的按钮只看**窗口图标**和
     **AppUserModelID**：两者都不设时，Windows 把窗口算到宿主 pythonw.exe 头上，
     显示成默认方框——装机后"有图标却不在任务栏显示"就是这么来的。
     """
-    icon = find_app_icon()
+    icon = find_app_icon(root)
     if icon:
         app.setWindowIcon(QIcon(icon))
     if sys.platform == "win32":

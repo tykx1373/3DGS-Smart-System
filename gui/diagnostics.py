@@ -245,10 +245,31 @@ def build_report(project_root, doctor_json=None, cfg=None):
     return "\n".join(out)
 
 
+def desktop_dir():
+    """真实桌面路径。
+
+    不少中文 Windows 把桌面重定向到了别的盘（D:\\Desktop 之类），此时
+    expanduser('~/Desktop') 根本不是目录，诊断包就会被写到项目目录里。
+    注册表里存的才是资源管理器实际用的那个，取不到时再退回常规路径。
+    """
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+                raw, _ = winreg.QueryValueEx(k, "Desktop")
+            path = os.path.expandvars(str(raw))
+            if os.path.isdir(path):
+                return path
+        except OSError:
+            pass
+    fallback = os.path.join(os.path.expanduser("~"), "Desktop")
+    return fallback if os.path.isdir(fallback) else None
+
+
 def default_dest(project_root):
     """默认落盘位置：桌面，取不到就用项目目录。"""
-    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-    base = desktop if os.path.isdir(desktop) else project_root
+    base = desktop_dir() or project_root
     return os.path.join(base, f"3dgs_diag_{datetime.now():%Y%m%d_%H%M%S}.zip")
 
 

@@ -168,5 +168,28 @@ class TestBuildZip(unittest.TestCase):
             self.assertNotIn("doctor.json", z.namelist())
 
 
+class TestDesktopDir(unittest.TestCase):
+    """桌面被重定向时，诊断包不该悄悄落到项目目录里。"""
+
+    def test_returns_existing_dir_or_none(self):
+        p = d.desktop_dir()
+        self.assertTrue(p is None or os.path.isdir(p))
+
+    def test_default_dest_uses_resolved_desktop(self):
+        dest = d.default_dest(r"C:\project")
+        home = d.desktop_dir()
+        self.assertTrue(os.path.basename(dest).startswith("3dgs_diag_"))
+        if home:
+            self.assertEqual(os.path.dirname(dest), home)
+
+    def test_falls_back_to_project_root(self):
+        orig = d.desktop_dir
+        d.desktop_dir = lambda: None
+        try:
+            self.assertTrue(d.default_dest(r"C:\proj").startswith(r"C:\proj"))
+        finally:
+            d.desktop_dir = orig
+
+
 if __name__ == "__main__":
     unittest.main()

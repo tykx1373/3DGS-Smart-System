@@ -45,12 +45,17 @@ class QtGuiTestCase(unittest.TestCase):
         self.cfg_path = os.path.join(self.tmp, "cfg.json")
         self._orig_cfg = pc.CONFIG_PATH
         pc.CONFIG_PATH = self.cfg_path
+        # MainWindow 会把日志写到 PROJECT_ROOT/logs/，不重定向的话测试就会往
+        # 真实项目的日志里灌垃圾，而这些日志又会被「导出诊断包」收进去。
+        self._orig_root_qg, self._orig_root_pc = qg.PROJECT_ROOT, pc.PROJECT_ROOT
+        qg.PROJECT_ROOT = pc.PROJECT_ROOT = self.tmp
         self.win = qg.MainWindow()
 
     def tearDown(self):
         self.win.close()
         _app.processEvents()
         pc.CONFIG_PATH = self._orig_cfg
+        qg.PROJECT_ROOT, pc.PROJECT_ROOT = self._orig_root_qg, self._orig_root_pc
 
     def _saved(self):
         with open(pc.CONFIG_PATH, encoding="utf-8") as f:
@@ -293,7 +298,7 @@ class QtGuiTestCase(unittest.TestCase):
 
     def test_photo_precheck_runs_in_background(self):
         """真跑一遍本地预检：结果回来并显示。"""
-        d = os.path.join(qg.PROJECT_ROOT, "sample", "south-building", "images")
+        d = os.path.join(ROOT, "sample", "south-building", "images")
         if not os.path.isdir(d):
             self.skipTest("本机没有示例数据集")
         names = [f for f in os.listdir(d) if f.lower().endswith(".JPG")]
@@ -386,12 +391,12 @@ class QtGuiTestCase(unittest.TestCase):
 
     def test_repo_has_icon_for_dev_tree(self):
         """开发树里图标必须存在，否则本地跑根本看不到任务栏图标问题。"""
-        self.assertTrue(os.path.isfile(qg.find_app_icon()))
+        self.assertTrue(os.path.isfile(qg.find_app_icon(ROOT)))
 
     def test_apply_app_identity_sets_window_icon(self):
         from PySide6.QtGui import QIcon
         _app.setWindowIcon(QIcon())                        # 先清成空图标
-        qg.apply_app_identity(_app)
+        qg.apply_app_identity(_app, ROOT)
         self.assertFalse(_app.windowIcon().isNull())
 
     def test_picking_images_prefills_workspace_name(self):
