@@ -40,6 +40,7 @@ from pipeline_core import (  # noqa: E402
 )
 import syscheck  # noqa: E402
 import qt_theme  # noqa: E402
+from app_version import APP_VERSION  # noqa: E402
 from qt_theme import (  # noqa: E402
     apply_theme, make_label, Card, PrimaryButton, Toast, confirm,
 )
@@ -771,13 +772,16 @@ class MainWindow(QMainWindow, PipelineCore):
     def __init__(self):
         PipelineCore.init_core(self)
         super().__init__()
-        self.setWindowTitle("3DGS 快速管线 - COLMAP + VkSplat(Vulkan) + VKGS")
+        self.setWindowTitle(f"3DGS 快速管线 v{APP_VERSION} - COLMAP + VkSplat(Vulkan) + VKGS")
         self.resize(1020, 700)
 
         self.cfg = load_config()
         self._init_vars()
         self.sig = _Signals()
         self._setup_logger()
+        # 日志里留一行版本：用户发来的诊断包因此能判定是哪个构建
+        # （同号多个构建的情况真实发生过）
+        self._log(f"[INFO] 3DGS 快速管线 v{APP_VERSION}")
 
         central = QWidget()
         h = QHBoxLayout(central)
@@ -806,7 +810,7 @@ class MainWindow(QMainWindow, PipelineCore):
         btl.setSpacing(1)
         bn = QLabel("3DGS 快速管线")
         bn.setObjectName("brandName")
-        bs = make_label("照片 → 3D 模型", "caption")
+        bs = make_label(f"照片 → 3D 模型 · v{APP_VERSION}", "caption")
         bs.setObjectName("brandSub")
         btl.addWidget(bn)
         btl.addWidget(bs)

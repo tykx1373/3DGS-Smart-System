@@ -35,7 +35,11 @@
       1/2 分辨率防显存溢出，手动选择分辨率则完全尊重）
 - [x] Windows 安装包（Inno Setup）：免管理员安装、开始菜单/桌面快捷方式、
       便携 conda 环境随包分发、卸载保留 workspaces/outputs/logs
-- [x] 启动器版本元数据与版本号单一来源（build_setup.ps1 的 $AppVersion）
+- [x] 启动器版本元数据与版本号单一来源（唯一来源 `gui/app_version.py`，
+      `build_setup.ps1` 反过来读它 —— 安装包不分发 `installer/`，写在那里的话
+      程序自己看不到版本号）
+- [x] 版本号在界面上可见（标题栏 `3DGS 快速管线 v2.3.1`、侧栏品牌区
+      `照片 → 3D 模型 · v2.3.1`、启动日志一行、诊断报告首屏字段）
 - [x] 许可证切换为 Apache-2.0（PySide6/Qt 为 LGPLv3 动态链接，随附声明）
 
 ## 🔜 近期计划（高优先级）

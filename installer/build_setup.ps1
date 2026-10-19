@@ -23,12 +23,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Single source of truth for the release version.
-# Drives: launcher exe version resource, ISCC /DMyAppVersion, output filename.
-$AppVersion = '2.3.0'
-
 $InstallerDir = $PSScriptRoot
 $RepoRoot = Resolve-Path (Join-Path $InstallerDir '..')
+
+# The release version lives in gui\app_version.py, not here: the installer does
+# not ship installer\, so the running app can only read its version from gui\.
+# It still drives the launcher exe version resource, ISCC /DMyAppVersion and the
+# output filename.
+$VersionFile = Join-Path $RepoRoot 'gui\app_version.py'
+$verLine = Select-String -Path $VersionFile -Pattern 'APP_VERSION' | Select-Object -First 1
+if (-not $verLine) { throw "APP_VERSION not found in $VersionFile" }
+$AppVersion = ($verLine.Line -replace '[^0-9.]', '')
+if ($AppVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+    throw "Unparsable version '$AppVersion' in $VersionFile"
+}
 $PyExe = Join-Path $RepoRoot 'env\vksplat\python.exe'
 $StagingExe = Join-Path $RepoRoot '3DGS-Studio.exe'
 $BuiltExe = Join-Path $InstallerDir 'dist\3DGS-Studio.exe'

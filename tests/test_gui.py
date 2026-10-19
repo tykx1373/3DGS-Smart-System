@@ -900,5 +900,31 @@ class TestMakeJunction(unittest.TestCase):
         self.assertIn("中文测试", r.stdout)
 
 
+class TestVersionSingleSource(unittest.TestCase):
+    """版本号只有一个来源 gui/app_version.py，界面/日志/打包脚本都读它。
+
+    起因：同号多个构建真实发生过（2.3.0 收回重发），装机版却读不到自己的版本
+    —— 因为安装包不分发 installer/，版本号写在那里的话程序看不见。
+    """
+
+    def test_version_is_semver(self):
+        sys.path.insert(0, os.path.join(ROOT, "gui"))
+        from app_version import APP_VERSION
+        self.assertRegex(APP_VERSION, r"^\d+\.\d+\.\d+$")
+
+    def test_build_script_reads_it_instead_of_hardcoding(self):
+        with open(os.path.join(ROOT, "installer", "build_setup.ps1"),
+                  encoding="utf-8") as f:
+            ps = f.read()
+        self.assertNotIn("$AppVersion = '", ps)
+        self.assertIn("gui\\app_version.py", ps)
+
+    def test_diagnostics_report_carries_version(self):
+        import diagnostics as d
+        from app_version import APP_VERSION
+        report = d.build_report(ROOT, doctor_json=None, cfg={})
+        self.assertIn(f"版本       {APP_VERSION}", report.splitlines()[:5][2])
+
+
 if __name__ == "__main__":
     unittest.main()

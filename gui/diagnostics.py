@@ -17,6 +17,8 @@ import sys
 import zipfile
 from datetime import datetime
 
+from app_version import APP_VERSION
+
 # 每个日志文件最多收这么多行（取尾部），避免整包过大
 LOG_TAIL_LINES = 3000
 MAX_LOG_FILES = 3
@@ -190,6 +192,7 @@ def build_report(project_root, doctor_json=None, cfg=None):
     out = [
         "3DGS 诊断报告",
         "=" * 56,
+        f"版本       {APP_VERSION}",
         f"生成时间   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"项目目录   {project_root}",
         f"Python     {sys.version.split()[0]}  ({sys.executable})",

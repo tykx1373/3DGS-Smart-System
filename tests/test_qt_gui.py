@@ -204,6 +204,15 @@ class QtGuiTestCase(unittest.TestCase):
         self.win.show_log_page()
         self.assertEqual(self.win.nav.currentRow(), self.win.NAV.index("日志"))
 
+    def test_version_visible_in_title_and_sidebar(self):
+        """版本号要能在界面上一眼看到（标题栏 + 侧栏品牌区），不必去翻设置或日志。"""
+        from app_version import APP_VERSION
+        self.assertIn(f"v{APP_VERSION}", self.win.windowTitle())
+        labels = [l.text() for l in self.win.findChildren(qg.QLabel)]
+        self.assertTrue(any(APP_VERSION in t for t in labels),
+                        "侧栏品牌区应显示版本号")
+        self.assertTrue(any("3DGS 快速管线" in t for t in labels))
+
     def test_capture_dialog_answers_the_caller(self):
         """采集质量弹窗：用户点「去补拍」时 ask_capture_report 必须返回 False，
         且文案里真的点名了失败的照片。"""
