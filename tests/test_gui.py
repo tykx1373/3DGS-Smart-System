@@ -890,14 +890,26 @@ class TestMakeJunction(unittest.TestCase):
         self.assertEqual(os.listdir(link), ["mine.jpg"])
         self.assertTrue(any(isinstance(t, tuple) for t in self.logs))
 
-    def test_run_text_decodes_ansi_output_without_crashing(self):
-        """cmd 输出是 OEM 代码页；旧写法让 subprocess 按 UTF-8 解码，
-        结果 stderr 变成 None，再 .strip() 就把真实原因盖掉了。"""
-        r = q.PipelineCore._run_text(["cmd", "/c", "echo", "中文测试"])
+    def test_run_text_returns_decodable_output(self):
+        """基本路径：返回值必须能安全解码，不会把 None 交回调用方去 .strip()。"""
+        r = q.PipelineCore._run_text(["cmd", "/c", "echo", "hello_diag"])
         self.assertIsNotNone(r)
         self.assertEqual(r.returncode, 0)
         self.assertIsInstance(r.stdout, str)
-        self.assertIn("中文测试", r.stdout)
+        self.assertIn("hello_diag", r.stdout)
+
+    def test_run_text_decodes_non_utf8_bytes(self):
+        """非 UTF-8 输出（cmd 很常见）必须解成字符串，而不是抛异常。
+
+        不能断言 `cmd /c echo 中文` 的结果：GitHub runner 的 OEM 代码页表示不了中文，
+        cmd 自己就先输出成 '????' —— 那是环境差异，不是解码能力问题。所以这里自己
+        喂确定的 GBK 字节。
+        """
+        code = "import sys; sys.stdout.buffer.write(b'\\xd6\\xd0\\xce\\xc4')"  # GBK「中文」
+        r = q.PipelineCore._run_text([sys.executable, "-c", code])
+        self.assertIsNotNone(r)
+        self.assertIsInstance(r.stdout, str)
+        self.assertIn("中文", r.stdout)
 
 
 class TestVersionSingleSource(unittest.TestCase):
