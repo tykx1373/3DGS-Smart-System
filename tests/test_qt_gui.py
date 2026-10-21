@@ -264,8 +264,9 @@ class QtGuiTestCase(unittest.TestCase):
         self.assertEqual(started, [True])
         self.assertTrue(self.win.img_var.get().endswith(
             os.path.join("sample", "south-building", "images")))
-        # 工作区要叫 south-building_...，不是照目录名取到的 images_...
-        self.assertIn("south-building_25imgs_gs", self.win.ws_var.get())
+        # 工作区要叫 south-building-1600_...，不是照目录名取到的 images_...
+        # （名字带长边像素：示例图降过分辨率，同名会复用旧内参的工作区）
+        self.assertIn("south-building-1600_25imgs_gs", self.win.ws_var.get())
         self.assertTrue(self.win._from_sample)
 
     def test_use_sample_without_dataset_does_not_start(self):

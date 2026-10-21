@@ -4,10 +4,10 @@
 ; 或手动：iscc installer\setup.iss（需先把 3DGS-Studio.exe 放到仓库根）
 
 #define MyAppName "3DGS 快速管线"
-; 版本号单一来源是 build_setup.ps1 的 $AppVersion（通过 /DMyAppVersion= 传入）；
-; 直接用 ISCC 编译时用此处默认值（改版本号请改 build_setup.ps1 的 $AppVersion，并顺手同步这里）
+; 版本号的唯一来源是 gui\app_version.py 的 APP_VERSION（build_setup.ps1 解析后
+; 通过 /DMyAppVersion= 传入）；直接用 ISCC 编译时用此处默认值，改版本请两处同步
 #ifndef MyAppVersion
-  #define MyAppVersion "2.3.0"
+  #define MyAppVersion "2.3.2"
 #endif
 #define MyAppPublisher "3DGS Studio"
 #define MyAppExeName "3DGS-Studio.exe"
@@ -61,7 +61,7 @@ Name: "custom"; Description: "自定义安装"; Flags: iscustom
 ; noCUDA 版 COLMAP 为必装基础组件（纯 CPU，所有显卡通用），不列为可选组件；
 ; CUDA 版仅 NVIDIA 显卡可用，检测到 N 卡时默认勾选（见 [Code] IsNvidiaMachine）
 Name: "colmapcuda"; Description: "COLMAP CUDA 加速版（约 741 MB，仅 NVIDIA 显卡生效，特征提取更快）"; Types: full; Check: IsNvidiaMachine
-Name: "samples"; Description: "示例数据集 south-building（约 223 MB，装完可直接跑通完整流程）"; Types: full
+Name: "samples"; Description: "示例数据集 south-building（约 65 MB，装完可直接跑通完整流程）"; Types: full
 
 [Dirs]
 ; 用户数据目录：卸载时永不删除

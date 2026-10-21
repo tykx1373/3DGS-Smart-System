@@ -54,7 +54,7 @@ COLMAP、VkSplat、VKGS 和便携 Python 环境已全部内置，无需自行安
 
 - **免管理员安装**：默认装到 `%AppData%\3DGS-Studio`，可自行更改目录；自动创建开始菜单与桌面快捷方式
 - **COLMAP 双版本**：纯 CPU 的 noCUDA 版默认必装（任何显卡通用）；检测到 NVIDIA 显卡时会默认勾选 CUDA 加速版（特征提取更快），不需要可在自定义安装中取消
-- **示例数据集（可选组件）**：128 张 south-building 照片（约 223 MB），装完可在 GUI 里一键试跑，用来先确认这台机器能出模型
+- **示例数据集（可选组件）**：128 张 south-building 照片（约 65 MB，长边 1600），装完可在 GUI 里一键试跑，用来先确认这台机器能出模型
 - **卸载自选数据**：卸载时会询问是否同时删除 workspaces / outputs / logs，默认保留
 - **系统要求**：Windows 10/11 (x64)、支持 Vulkan 1.3+ 的显卡（NVIDIA / AMD / Intel 核显均可）、8 GB 以上内存（核显建议 16 GB）
 - **验证下载**：Releases 页面会显示安装包的 SHA-256，可在 PowerShell 中用

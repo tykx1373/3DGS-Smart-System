@@ -48,7 +48,9 @@ from qt_theme import (  # noqa: E402
 
 # 内置示例数据集：安装包「示例数据集」组件会把它放到 <安装目录>/sample 下。
 SAMPLE_SUBDIR = os.path.join("sample", "south-building", "images")
-SAMPLE_DATASET_NAME = "south-building"
+# 工作区名里带长边像素：示例图曾从 3072px 降到 1600px（为缩小安装包），
+# 相机内参是按当时的分辨率算的，名字相同就会复用旧工作区导致位姿错位。
+SAMPLE_DATASET_NAME = "south-building-1600"
 # 少于这个张数 COLMAP 基本定位不出来，不配当新手的「第一次成功体验」。
 SAMPLE_MIN_IMAGES = 20
 
