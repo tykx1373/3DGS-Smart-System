@@ -6,4 +6,4 @@ installer/ —— 版本号写在这里，界面标题、日志、诊断包和�
 installer/build_setup.ps1 会解析本文件来生成版本资源与产物文件名。
 """
 
-APP_VERSION = "2.3.2"
+APP_VERSION = "2.3.3"
