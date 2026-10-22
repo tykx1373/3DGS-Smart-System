@@ -215,12 +215,19 @@ class TrainPage(QWidget):
         optrow = QWidget()
         ol = QHBoxLayout(optrow)
         ol.setContentsMargins(0, 0, 0, 0)
-        win.eval_chk = QCheckBox("训练后质量评估（PSNR/SSIM/LPIPS）")
+        win.eval_chk = QCheckBox("训练后质量评估（约 +1 分钟）")
         win.eval_chk.setChecked(True)
-        win.eval_chk.setToolTip("训完留出几张照片考试并打分；CPU 版 PyTorch 约几十秒。")
+        win.eval_chk.setToolTip(
+            "勾选：训完留出 16 张照片考试并打分（PSNR / SSIM / LPIPS）。\n"
+            "实测 128 张、快速档下约 1 分 17 秒，比训练本身（约 40 秒）还久——\n"
+            "其中一半时间花在加载 LPIPS 模型上。\n"
+            "只想要模型、不在意分数就取消勾选，能明显更快看到结果；\n"
+            "模型本身与勾选与否无关。")
         ol.addWidget(win.eval_chk)
         win.lpips_chk = QCheckBox("允许联网下载 LPIPS 权重（约 760 MB）")
-        win.lpips_chk.setToolTip("不勾：没有权重时只输出 PSNR/SSIM，不会卡住。")
+        win.lpips_chk.setToolTip(
+            "不勾：本机没有权重时只算 PSNR/SSIM，评估会快很多，也不会卡住。\n"
+            "勾选：缺权重时联网下载（约 760 MB），之后每次评估都要加载这两个网络。")
         ol.addWidget(win.lpips_chk)
         ol.addStretch(1)
         card.body_layout.addWidget(optrow)
