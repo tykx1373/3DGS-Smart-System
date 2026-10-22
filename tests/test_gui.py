@@ -30,11 +30,17 @@ class TestProgressParsing(unittest.TestCase):
 
     def test_marker_found_when_not_at_line_start(self):
         marks = q._PROGRESS_RE.findall(self.NOISY)
-        self.assertEqual(marks[-1], ("100", "3000", "1.5", "43.5", "79296"))
+        # 末尾的显存字段是可选的，旧版训练器不给这一项，匹配到空串
+        self.assertEqual(marks[-1], ("100", "3000", "1.5", "43.5", "79296", ""))
 
     def test_plain_marker(self):
         marks = q._PROGRESS_RE.findall("PROGRESS: 500/5000 12.0 90.0 123456")
-        self.assertEqual(marks[0], ("500", "5000", "12.0", "90.0", "123456"))
+        self.assertEqual(marks[0], ("500", "5000", "12.0", "90.0", "123456", ""))
+
+    def test_marker_carries_vram(self):
+        """训练器额外报一项显存占用（MB）；旧版没有这一项，解析要兼容。"""
+        marks = q._PROGRESS_RE.findall("PROGRESS: 500/5000 12.0 90.0 123456 3276")
+        self.assertEqual(marks[0], ("500", "5000", "12.0", "90.0", "123456", "3276"))
 
     def test_line_without_marker(self):
         self.assertEqual(q._PROGRESS_RE.findall("Writing PLY"), [])

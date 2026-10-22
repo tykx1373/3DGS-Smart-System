@@ -965,7 +965,7 @@ class MainWindow(QMainWindow, PipelineCore):
         marks = _PROGRESS_RE.findall(text)
         if marks:
             try:
-                s, t, el, eta, n = marks[-1]
+                s, t, el, eta, n, vram_mb = marks[-1]
                 step, total, num = int(s), int(t), int(n)
                 elapsed, eta = float(el), float(eta)
                 pct = step / total if total else 0.0
@@ -978,6 +978,13 @@ class MainWindow(QMainWindow, PipelineCore):
                 if eta > 0:
                     detail += f" · 剩余 {eta/60:.1f} 分钟"
                 detail += f" · {num} 个高斯"
+                if vram_mb:
+                    # 分子是 vksplat 自己缓冲区的占用，不含驱动与其它程序；
+                    # 分母只在能给出可信总量时才有（核显共享内存不给）
+                    used_gb = int(vram_mb) / 1024
+                    total_mb = getattr(self, "_vram_total_mb", None)
+                    detail += (f" · 显存 {used_gb:.1f}/{total_mb/1024:.1f} GB" if total_mb
+                               else f" · 显存 {used_gb:.1f} GB")
                 self.sig.progress.emit(overall, detail)
                 # 约 30% 处记录一次累计平均 it/s，供下次耗时估算（每次运行仅一次）
                 if not self._ips_recorded and pct >= 0.3 and elapsed > 5:

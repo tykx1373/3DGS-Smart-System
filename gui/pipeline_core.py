@@ -128,7 +128,9 @@ QUALITY_PRESETS = {
 
 # tqdm 走 stderr 且用 \r 刷新，会把 stdout 的 PROGRESS 标记挤到行中间，
 # 因此这里不要求行首匹配，而是在整行内查找进度标记。
-_PROGRESS_RE = re.compile(r"PROGRESS:\s*(\d+)/(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)")
+# 末尾的显存字段是可选的：旧版训练器只报 5 项，缺了也不能当成解析失败。
+_PROGRESS_RE = re.compile(
+    r"PROGRESS:\s*(\d+)/(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)(?:\s+(\d+))?")
 
 # 通用 tqdm 帧，形如 "Running eval:  44%|███▍ | 7/16 [02:20<03:04, 20.5s/it]"。
 # 只匹配 ASCII 阶段名，避免误吃中文或路径文本。
@@ -561,6 +563,9 @@ class PipelineCore:
         self._colmap_span, self._train_span = (0.0, 1.0), (0.0, 1.0)
         self._colmap_t0 = None
         self._colmap_last_n = 0
+        # 训练进度里「显存 X/Y GB」的分母；None 表示这台机器给不出可信总量，
+        # 界面就只显示占用值
+        self._vram_total_mb = None
 
     # ---------------------------------------------------------- 进度分段 ----
     def _set_span(self, lo, hi):
@@ -1500,6 +1505,16 @@ if __name__ == "__main__":
         device_id, is_integrated, gpu_name = self._detect_gpu(vksp_py)
         quality = self.quality_var.get()
         cap_map = {"快速": 200000, "标准": 400000, "高质量": 800000}
+        # 显存总量：既用于分辨率自适应，也用作进度条里「显存 X/Y GB」的分母。
+        # 只在可信时给分母——核显是共享内存（与程序自身占用不是一个口径），
+        # 非 N 卡的 CIM AdapterRAM 在 8GB 以上会回绕，宁可不显示也不报错数。
+        vram_total_mb = None
+        if not is_integrated and gpu_name != "unknown":
+            vram_total_mb = self._detect_vram_mb()
+            if vram_total_mb is not None and vram_total_mb < 2048:
+                vram_total_mb = None
+        self._vram_total_mb = vram_total_mb
+
         # 档位给默认值；高级选项里的「图像分辨率」可单独覆盖。
         # 用户手动选了分辨率 → 完全尊重；跟随档位 → 按显存自适应：
         # 核显共享内存、独显 <8GB 时强制降半档，避免显存不足训练崩溃。
@@ -1512,14 +1527,13 @@ if __name__ == "__main__":
                     res_dir = "images_2"
                     self._log("[INFO] 核显共享内存：自动使用 1/2 分辨率"
                               "（可在高级选项手动改回）。")
-                else:
-                    vram_mb = self._detect_vram_mb()
-                    if vram_mb is not None and vram_mb < 7500:
+                elif vram_total_mb is not None:
+                    if vram_total_mb < 7500:
                         res_dir = "images_2"
-                        self._log(f"[INFO] 检测到显存约 {vram_mb // 1024} GB（不足 8GB）："
+                        self._log(f"[INFO] 检测到显存约 {vram_total_mb // 1024} GB（不足 8GB）："
                                   f"自动使用 1/2 分辨率（可在高级选项手动改回）。")
-                    elif vram_mb is not None:
-                        self._log(f"[INFO] 显存 {vram_mb // 1024} GB：使用原分辨率训练。")
+                    else:
+                        self._log(f"[INFO] 显存 {vram_total_mb // 1024} GB：使用原分辨率训练。")
         base_cap = cap_map.get(quality, 400000)
 
         # EXIF 方向检查：COLMAP 会应用 EXIF 旋转，而 cv2 / stb_image 不会。

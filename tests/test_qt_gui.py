@@ -331,6 +331,25 @@ class QtGuiTestCase(unittest.TestCase):
         self.assertEqual(got[-1][0], 0.65)
         self.assertIn("总进度 65%", got[-1][1])
 
+    def test_train_progress_shows_vram(self):
+        """显存占用要出现在进度文案里；拿不到可信总量时只显示占用值。"""
+        got = []
+        self.win.sig.progress.connect(lambda f, d: got.append(d))
+        self.win._ips_recorded = True
+        self.win._set_span(0.0, 1.0)
+        # 能给出总量（独显）→ 显示 X/Y
+        self.win._vram_total_mb = 8192
+        self.win._log("PROGRESS: 3000/15000 120.0 500.0 200000 3276")
+        self.assertIn("显存 3.2/8.0 GB", got[-1])
+        # 核显/读不到总量 → 只给占用值，避免分子分母口径不一致
+        self.win._vram_total_mb = None
+        self.win._log("PROGRESS: 3000/15000 120.0 500.0 200000 3276")
+        self.assertIn("显存 3.2 GB", got[-1])
+        self.assertNotIn("/", got[-1].split("显存")[-1])
+        # 旧版训练器不给这一项 → 文案里不该冒出「显存 None」
+        self.win._log("PROGRESS: 3000/15000 120.0 500.0 200000")
+        self.assertNotIn("显存", got[-1])
+
     def test_share_splat_actually_generates_file(self):
         """端到端跑 share_splat 本身。
 

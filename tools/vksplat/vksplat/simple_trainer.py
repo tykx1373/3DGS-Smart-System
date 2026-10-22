@@ -357,8 +357,11 @@ def train(config: TrainerConfig, resume_output_dir: str = None):
             elapsed = perf_counter() - t0
             eta = elapsed / (step - start_step + 1) * (config.train_steps - step - 1) if step > start_step else 0
             num_splats = len(module.opacities)
-            # PROGRESS: 当前步/总步数/已用时秒/预计剩余秒/高斯数
-            PRINT(f"PROGRESS: {step + 1}/{config.train_steps} {elapsed:.1f} {eta:.1f} {num_splats}")
+            # PROGRESS: 当前步/总步数/已用时秒/预计剩余秒/高斯数/显存占用MB
+            # 显存来自 vksplat 自身的缓冲区计数，不含驱动与其它程序开销；
+            # 读的是 CPU 侧累加值，没有 GPU 同步，每 100 步取一次不会有感。
+            vram_mb = int(module.get_vram_usage() / 1024 ** 2)
+            PRINT(f"PROGRESS: {step + 1}/{config.train_steps} {elapsed:.1f} {eta:.1f} {num_splats} {vram_mb}")
         # 定期存 checkpoint
         if (step + 1) % CHECKPOINT_INTERVAL == 0:
             save_checkpoint(module, step + 1, ckpt_dir)
@@ -369,6 +372,7 @@ def train(config: TrainerConfig, resume_output_dir: str = None):
     peak_vram_usage = module.get_peak_vram_usage()
     PRINT(f"Time elapsed: {t1-t0:.1f} seconds")
     PRINT(f"VRAM usage: {vram_usage/1024**3:.2f} GiB")
+    PRINT(f"Peak VRAM usage: {peak_vram_usage/1024**3:.2f} GiB")
     PRINT(f"Num splats: {num_splats}")
     with open(os.path.join(config.output_dir, 'train.json'), 'w') as fp:
         train_json = {
