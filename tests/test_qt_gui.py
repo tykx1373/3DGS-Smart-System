@@ -340,15 +340,78 @@ class QtGuiTestCase(unittest.TestCase):
         # 能给出总量（独显）→ 显示 X/Y
         self.win._vram_total_mb = 8192
         self.win._log("PROGRESS: 3000/15000 120.0 500.0 200000 3276")
-        self.assertIn("显存 3.2/8.0 GB", got[-1])
+        self.assertIn("模型显存 3.2/8.0 GB", got[-1])
         # 核显/读不到总量 → 只给占用值，避免分子分母口径不一致
         self.win._vram_total_mb = None
         self.win._log("PROGRESS: 3000/15000 120.0 500.0 200000 3276")
-        self.assertIn("显存 3.2 GB", got[-1])
-        self.assertNotIn("/", got[-1].split("显存")[-1])
+        self.assertIn("模型显存 3.2 GB", got[-1])
+        self.assertNotIn("/", got[-1].split("模型显存")[-1])
         # 旧版训练器不给这一项 → 文案里不该冒出「显存 None」
         self.win._log("PROGRESS: 3000/15000 120.0 500.0 200000")
         self.assertNotIn("显存", got[-1])
+
+    def test_log_file_strips_prefix_and_keeps_semantic_level(self):
+        """文件里不该出现「[INFO] [FAIL]」这种自相矛盾的行：级别归 logger，
+        正文只留内容。界面仍显示带前缀的原文（色盲用户靠前缀分级）。"""
+        import logging
+        from unittest import mock
+        with mock.patch.object(self.win.logger, "log") as m:
+            self.win._log("[FAIL] 图片文件夹无效。")
+        level, msg = m.call_args[0]
+        self.assertEqual(level, logging.ERROR)
+        self.assertEqual(msg, "图片文件夹无效。")
+
+        got = []
+        self.win.sig.log.connect(lambda t, lv: got.append((t, lv)))
+        with mock.patch.object(self.win.logger, "log"):
+            self.win._log("[WARN] 注册率 60%")
+        self.assertEqual(got[-1], ("[WARN] 注册率 60%", "warn"))
+
+    def test_tqdm_is_bucketed_and_training_is_skipped(self):
+        """tqdm 每 10% 才写一行；训练阶段由 PROGRESS 驱动，完全不写。"""
+        from unittest import mock
+        calls = []
+        with mock.patch.object(self.win.logger, "info", side_effect=lambda m: calls.append(m)):
+            for pct in (0, 3, 6, 9, 10, 15, 20):
+                self.win._log(f"Running eval: {pct:3d}%|## | {pct}/16 [00:01<00:10, 2.0s/it]")
+            self.win._log("Training:  50%|####| 2500/5000 [00:20<00:20, 100.0it/s]")
+        self.assertEqual(len(calls), 3)          # 0% / 10% / 20% 各一行
+        self.assertFalse(any("Training" in c for c in calls))
+
+    def test_colmap_per_image_lines_stay_out_of_ui(self):
+        """逐张配准行只进文件：进度条已经在逐张推进，界面不该被它刷屏。"""
+        from unittest import mock
+        got = []
+        self.win.sig.log.connect(lambda t, lv: got.append(t))
+        with mock.patch.object(self.win.logger, "info") as m:
+            self.win._log("I20261022 21:06:41.3 35616 incremental_pipeline.cc:620]"
+                          " Registering image #12 (num_reg_frames=123)")
+            self.win._log("I20261022 21:06:41.3 35616 incremental_pipeline.cc:623]"
+                          " => Image sees 796 / 1919 points")
+        self.assertEqual(got, [])                # 界面一条都不显示
+        self.assertEqual(m.call_count, 2)        # 文件仍保留原文，排查要用
+
+    def test_feature_detail_lines_only_reach_the_file(self):
+        """特征提取每张图 6 行明细：界面只留每 10 张一个节点。"""
+        from unittest import mock
+        got = []
+        self.win.sig.log.connect(lambda t, lv: got.append(t))
+        with mock.patch.object(self.win.logger, "info"):
+            self.win._log("I20261022 21:03:17.6 21584 feature_extraction.cc:273]"
+                          "   Name:            P1180141.JPG")
+            self.win._log("I20261022 21:03:17.6 21584 feature_extraction.cc:294]"
+                          "   Features:        8728 (SIFT)")
+            for n in (1, 5, 10, 17, 128):
+                self.win._log(f"I20261022 21:03:17.6 21584 feature_extraction.cc:270]"
+                              f" Processed file [{n}/128]")
+        # 1/5/17 不显示；10（整十）与 128（最后一张）各显示一次
+        self.assertEqual(len(got), 2)
+        self.assertIn("[10/128]", got[0])
+        self.assertIn("[128/128]", got[1])
+
+    def test_log_view_caps_block_count(self):
+        """日志页有行数上限，长时间训练不会把内存堆爆。"""
+        self.assertEqual(self.win.log_page.view.document().maximumBlockCount(), 5000)
 
     def test_share_splat_actually_generates_file(self):
         """端到端跑 share_splat 本身。

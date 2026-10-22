@@ -615,13 +615,20 @@ class LogPage(QWidget):
         self.view = QTextEdit()
         self.view.setReadOnly(True)
         self.view.setFont(QFont("Consolas", 10))
+        # 长时间训练会累积上万行；超出后自动丢弃最早的，内存不会一直涨
+        self.view.document().setMaximumBlockCount(5000)
         lay.addWidget(self.view, 1)
 
     def append_line(self, text, level):
         import html
         color = self.COLORS.get(level, "#c8c8c8")
+        bar = self.view.verticalScrollBar()
+        # 只有本来就停在底部才跟着滚。用户往上翻看历史时，
+        # 继续强制滚动会把他不断拽回最新一行（长任务里非常恼人）。
+        at_bottom = bar.value() >= bar.maximum() - 4
         self.view.append(f'<span style="color:{color}">{html.escape(text)}</span>')
-        self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
+        if at_bottom:
+            bar.setValue(bar.maximum())
 
 
 # ============================================================== 评估结果弹窗 ====
@@ -780,6 +787,9 @@ class MainWindow(QMainWindow, PipelineCore):
         self.cfg = load_config()
         self._init_vars()
         self.sig = _Signals()
+        # tqdm 刷屏治理：按「阶段名 -> 已写到的百分比桶」去重，
+        # 每个阶段每 10% 只留一行（训练阶段由 PROGRESS 驱动，完全不记）
+        self._tqdm_bucket = {}
         self._setup_logger()
         # 日志里留一行版本：用户发来的诊断包因此能判定是哪个构建
         # （同号多个构建的情况真实发生过）
@@ -960,8 +970,13 @@ class MainWindow(QMainWindow, PipelineCore):
         self.logger = logger
 
     def _log(self, text):
-        """核心在工作线程调用：文件日志 + 信号刷新界面，并解析进度。"""
+        """核心在工作线程调用：文件日志 + 信号刷新界面，并解析进度。
+
+        文件日志的写法与界面不同：界面给人看（带颜色、前缀），文件给排查用
+        （级别要能过滤、正文不要带自相矛盾的前缀、tqdm 不能刷屏）。
+        """
         from pipeline_core import _PROGRESS_RE, _TQDM_RE
+        text = text.rstrip()
         marks = _PROGRESS_RE.findall(text)
         if marks:
             try:
@@ -983,9 +998,13 @@ class MainWindow(QMainWindow, PipelineCore):
                     # 分母只在能给出可信总量时才有（核显共享内存不给）
                     used_gb = int(vram_mb) / 1024
                     total_mb = getattr(self, "_vram_total_mb", None)
-                    detail += (f" · 显存 {used_gb:.1f}/{total_mb/1024:.1f} GB" if total_mb
-                               else f" · 显存 {used_gb:.1f} GB")
+                    detail += (f" · 模型显存 {used_gb:.1f}/{total_mb/1024:.1f} GB" if total_mb
+                               else f" · 模型显存 {used_gb:.1f} GB")
                 self.sig.progress.emit(overall, detail)
+                # 文件里只留结构化的一行：这行原文常带着被 \r 挤过来的 tqdm 尾巴
+                # （"...it/s]PROGRESS: ..."），原样写进诊断包既长又难读。
+                self.logger.info(f"{step}/{total} 步 · {num} 个高斯"
+                                 + (f" · 模型显存 {int(vram_mb) / 1024:.1f} GB" if vram_mb else ""))
                 # 约 30% 处记录一次累计平均 it/s，供下次耗时估算（每次运行仅一次）
                 if not self._ips_recorded and pct >= 0.3 and elapsed > 5:
                     self._ips_recorded = True
@@ -994,31 +1013,76 @@ class MainWindow(QMainWindow, PipelineCore):
                     except Exception:
                         pass
             except Exception:
-                pass
-            # 进度行进文件日志，界面不刷屏
-            self.logger.info(text.strip())
+                # 解析失败也要留痕，否则诊断包里会凭空少一行
+                self.logger.info(text)
             return
         if "%|" in text:
             m = _TQDM_RE.search(text)
-            # Training 由上面的 PROGRESS 标记驱动，跳过以免文案互相覆盖
-            if m and m.group("label").strip() != "Training":
-                d = f"{m.group('label').strip()}：{m.group('n')}/{m.group('total')}"
-                if m.group("elapsed"):
-                    d += f" · 已用 {m.group('elapsed')}"
-                if m.group("eta") and m.group("eta") != "?":
-                    d += f" · 剩余 {m.group('eta')}"
-                self.sig.progress.emit(-1.0, d)
-            self.logger.info(text.strip())
+            if m:
+                label = m.group("label").strip()
+                try:
+                    pct = int(m.group("pct"))
+                except (TypeError, ValueError):
+                    return
+                # Training 由上面的 PROGRESS 驱动：它每 100 步已经写了结构化的
+                # 一行，tqdm 再逐帧记一遍没有信息量，只会让日志膨胀几十倍。
+                if label == "Training":
+                    return
+                # 其它阶段（评测等）每 10% 留一行。tqdm 在文件里由 \r 刷新，
+                # 逐帧写会刷出几百行；诊断包 210 KB 里有三分之一是这种行。
+                bucket = pct // 10
+                if bucket > self._tqdm_bucket.get(label, -1):
+                    self._tqdm_bucket[label] = bucket
+                    d = f"{label}：{m.group('n')}/{m.group('total')}"
+                    if m.group("elapsed"):
+                        d += f" · 已用 {m.group('elapsed')}"
+                    if m.group("eta") and m.group("eta") != "?":
+                        d += f" · 剩余 {m.group('eta')}"
+                    self.sig.progress.emit(-1.0, d)
+                    self.logger.info(d)
+                return
+            self.logger.info(text)
             return
-        level = "info"
-        if text.startswith("[FAIL]"):
-            level = "fail"
-        elif text.startswith("[WARN]"):
-            level = "warn"
-        elif text.startswith("[OK]"):
-            level = "ok"
-        self.logger.info(text)
-        self.sig.log.emit(text, level)
+        # COLMAP 特征提取的逐图明细：每张 6 行（文件名/尺寸/相机模型/焦距/
+        # 特征数），128 张就是 768 行，且内容几乎完全重复。界面只留每 10 张
+        # 一个进度节点，明细仍写进文件（排查"某张图特征异常"时要用）。
+        if any(p in text for p in ("  Name:", "  Dimensions:", "  Camera:",
+                                   "  Focal Length:", "  Features:")):
+            self.logger.info(text)
+            return
+        if "Processed file [" in text:
+            self.logger.info(text)
+            try:
+                pair = text.split("Processed file [", 1)[1].split("]", 1)[0]
+                n_now, n_total = (int(x) for x in pair.split("/"))
+                if n_now % 10 == 0 or n_now == n_total:
+                    self.sig.log.emit(text, "info")
+            except Exception:
+                pass
+            return
+        # COLMAP 的逐张配准行（128 张图就是 250+ 行）：进度条已经按
+        # 「正在定位照片 64/128」逐张推进，界面上再逐张刷一遍只会把
+        # 真正有用的信息顶出视野。文件里保留全文，排查配准问题时要看。
+        if ("Registering image #" in text or "=> Image sees" in text
+                or "Registering image with" in text):
+            self.logger.info(text)
+            return
+        # 级别从正文前缀里取，写文件时把前缀剥掉：logger 行头已经有
+        # [ERROR]/[WARNING]，正文再带一个 [FAIL] 就成了「[INFO] [FAIL]」
+        # 这种自相矛盾的拼接（诊断包里出现过 21 行）。
+        # 界面仍显示原文：前缀不只是颜色，也是色盲用户唯一的分级线索。
+        raw = text
+        level, log_level = "info", logging.INFO
+        for prefix, lv, ll in (("[FAIL]", "fail", logging.ERROR),
+                               ("[WARN]", "warn", logging.WARNING),
+                               ("[OK]", "ok", logging.INFO),
+                               ("[INFO]", "info", logging.INFO)):
+            if text.startswith(prefix):
+                level, log_level = lv, ll
+                text = text[len(prefix):].lstrip()
+                break
+        self.logger.log(log_level, text)
+        self.sig.log.emit(raw, level)
 
     # ------------------------------------------------ signals ----
     def _connect_signals(self):
@@ -1049,6 +1113,8 @@ class MainWindow(QMainWindow, PipelineCore):
         if running:
             self.det_bar.setValue(0)
             self.train_page.fail_card.setVisible(False)   # 新一轮开始：收起上一次的报错
+            # 上一轮的百分比桶作废，否则新一次的评测前 10% 会被当成「已经记过」
+            self._tqdm_bucket.clear()
         # 运行中禁用参数（训练页 + 设置页），避免中途改设置。
         # 先统一处理，再单独设置开始/停止按钮，避免被循环覆盖。
         for page in (self.train_page, self.settings_page):
