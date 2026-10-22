@@ -105,51 +105,52 @@ def _row(label, *widgets, tip=None, label_width=110):
     return w
 
 
-# ================================================================== 训练页 ====
-class TrainPage(QWidget):
+def _path_row(parent, lay, label, var, file=True, tip=None, label_width=110):
+    """一行「标签 + 路径输入框 + 浏览按钮」。设置页与训练设置页共用。"""
+    w = QWidget()
+    h = QHBoxLayout(w)
+    h.setContentsMargins(0, 0, 0, 0)
+    lab = QLabel(label)
+    lab.setFixedWidth(label_width)
+    h.addWidget(lab)
+    edit = QLineEdit()
+    edit.setText(var.get())
+    if tip:
+        edit.setToolTip(tip)
+        lab.setToolTip(tip)
+    btn = QPushButton("浏览")
+
+    def pick():
+        if file:
+            p, _ = QFileDialog.getOpenFileName(parent, label)
+        else:
+            p = QFileDialog.getExistingDirectory(parent, label)
+        if p:
+            edit.setText(relativize_path(p))
+
+    btn.clicked.connect(pick)
+    h.addWidget(edit, 1)
+    h.addWidget(btn)
+    lay.addWidget(w)
+    return edit
+
+
+# ================================================================ 照片页 ====
+class PhotoPage(QWidget):
+    """只管一件事：把照片选对。选完就地预检，不合格当场说。"""
+
     def __init__(self, win):
         super().__init__()
-        self.setObjectName("trainPage")
+        self.setObjectName("photoPage")
         self.win = win
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 20, 28, 20)
         root.setSpacing(12)
 
-        root.addWidget(make_label("3D 照片重建", "title"))
+        root.addWidget(make_label("1 · 选择照片", "title"))
         root.addWidget(make_label("把你拍的一组照片变成可旋转、可缩放的 3D 模型。", "caption"))
 
-        # 步骤指示
-        steps = QWidget()
-        sl = QHBoxLayout(steps)
-        sl.setContentsMargins(2, 6, 0, 2)
-        self.step_labels = []
-        for num, title, sub in (("1", "选择照片", "选一个装照片的文件夹"),
-                                ("2", "生成 3D 模型", "电脑自动计算（几分钟~几十分钟）"),
-                                ("3", "查看结果", "自动打开 3D 查看器")):
-            c = QWidget()
-            cl = QHBoxLayout(c)
-            cl.setContentsMargins(0, 0, 0, 0)
-            cl.setSpacing(9)
-            n = QLabel(num)
-            n.setFixedSize(30, 30)
-            n.setAlignment(Qt.AlignCenter)
-            t = QWidget()
-            tl = QVBoxLayout(t)
-            tl.setContentsMargins(0, 0, 0, 0)
-            tl.setSpacing(1)
-            t1, t2 = QLabel(title), make_label(sub, "caption")
-            tl.addWidget(t1)
-            tl.addWidget(t2)
-            cl.addWidget(n)
-            cl.addWidget(t)
-            sl.addWidget(c)
-            self.step_labels.append((n, t1, t2))
-        sl.addStretch(1)
-        root.addWidget(steps)
-        self.set_step_color(0)
-
-        # 照片选择卡
-        card = Card("选择照片")
+        card = Card("照片文件夹")
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -178,8 +179,36 @@ class TrainPage(QWidget):
         card.body_layout.addWidget(win.photo_note)
         root.addWidget(card)
 
-        # 参数卡
-        card = Card("质量与训练参数")
+        brow = QWidget()
+        bl = QHBoxLayout(brow)
+        bl.setContentsMargins(0, 0, 0, 0)
+        nxt = PrimaryButton("下一步：训练设置 →")
+        nxt.setFixedHeight(40)
+        nxt.setMinimumWidth(180)
+        nxt.clicked.connect(lambda: win.nav.setCurrentRow(win.NAV.index("训练设置")))
+        bl.addWidget(nxt)
+        bl.addStretch(1)
+        root.addWidget(brow)
+        root.addStretch(1)
+
+
+# ============================================================ 训练设置页 ====
+class TrainSettingsPage(QWidget):
+    """只管一件事：这次训练怎么跑。训练参数全部集中在这一页。"""
+
+    def __init__(self, win):
+        super().__init__()
+        self.setObjectName("trainSettingsPage")
+        self.win = win
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 20, 28, 20)
+        root.setSpacing(12)
+
+        root.addWidget(make_label("2 · 训练设置", "title"))
+        root.addWidget(make_label("只改这一页就能决定模型质量与耗时；不确定时保持默认即可。",
+                                  "caption"))
+
+        card = Card("质量档位")
         qrow = QWidget()
         ql = QHBoxLayout(qrow)
         ql.setContentsMargins(0, 0, 0, 0)
@@ -211,7 +240,10 @@ class TrainPage(QWidget):
         pl.addWidget(win.mcmc_chk)
         pl.addStretch(1)
         card.body_layout.addWidget(prow)
+        root.addWidget(card)
 
+        # 高级选项：与日常参数分开，免得新手在选项堆里迷路
+        card = Card("高级选项（一般不用动）")
         optrow = QWidget()
         ol = QHBoxLayout(optrow)
         ol.setContentsMargins(0, 0, 0, 0)
@@ -245,7 +277,34 @@ class TrainPage(QWidget):
         card.body_layout.addWidget(optrow2)
         root.addWidget(card)
 
-        # 操作按钮
+        card = Card("图像与显存")
+        win.cache_combo = QComboBox()
+        win.cache_combo.addItems(["cpu", "gpu"])
+        win.cache_combo.setCurrentText("cpu")
+        win.cache_combo.setToolTip("gpu 更快但占显存；核显或显存紧张选 cpu。")
+        win.res_combo = QComboBox()
+        win.res_combo.addItems([RES_AUTO] + list(RES_DIR_MAP))
+        win.res_combo.setToolTip("训练图像尺寸；跟随档位＝快速 1/4、标准 1/2、高质量原图，\n"
+                                 "并按显存自动降档（核显/不足 8GB 的独显最高 1/2，防显存溢出）。")
+        card.body_layout.addWidget(_row("图片缓存：", win.cache_combo, label_width=110))
+        card.body_layout.addWidget(_row("图像分辨率：", win.res_combo, label_width=110))
+        win.maximg_spin = QSpinBox()
+        win.maximg_spin.setRange(256, 20000)
+        win.maximg_spin.setValue(1600)
+        win.maximg_spin.setToolTip("COLMAP 特征提取时图片长边的上限（默认 1600）。")
+        card.body_layout.addWidget(_row("最大图片尺寸：", win.maximg_spin, label_width=110))
+        win.mask_edit = _path_row(
+            self, card.body_layout, "Mask 文件夹:", win.mask_var, file=False,
+            tip="遮罩图须与照片同名（IMG_001.jpg → IMG_001.jpg.png），"
+                "黑色区域训练时忽略；留空不使用。")
+        root.addWidget(card)
+
+        card = Card("输出位置")
+        win.ws_edit = _path_row(
+            self, card.body_layout, "工作区文件夹:", win.ws_var, file=False,
+            tip="留空时自动在 workspaces/ 下按照片文件夹名生成。")
+        root.addWidget(card)
+
         brow = QWidget()
         bl = QHBoxLayout(brow)
         bl.setContentsMargins(0, 0, 0, 0)
@@ -254,6 +313,66 @@ class TrainPage(QWidget):
         win.run_btn.setMinimumWidth(180)
         win.run_btn.clicked.connect(win.start_pipeline)
         bl.addWidget(win.run_btn)
+        bl.addStretch(1)
+        root.addWidget(brow)
+        root.addStretch(1)
+
+
+# ================================================================== 运行页 ====
+class RunPage(QWidget):
+    """只管一件事：跑起来之后的进度、结果与排错。"""
+
+    def __init__(self, win):
+        super().__init__()
+        self.setObjectName("runPage")
+        self.win = win
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 20, 28, 20)
+        root.setSpacing(12)
+
+        root.addWidget(make_label("3 · 生成与查看", "title"))
+        root.addWidget(make_label("点「开始生成」后这一页会显示进度；出错时原因与办法也在这里。",
+                                  "caption"))
+
+        # 步骤指示
+        steps = QWidget()
+        sl = QHBoxLayout(steps)
+        sl.setContentsMargins(2, 6, 0, 2)
+        self.step_labels = []
+        for num, title, sub in (("1", "选择照片", "在「照片」页完成"),
+                                ("2", "生成 3D 模型", "电脑自动计算（几分钟~几十分钟）"),
+                                ("3", "查看结果", "自动打开 3D 查看器")):
+            c = QWidget()
+            cl = QHBoxLayout(c)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(9)
+            n = QLabel(num)
+            n.setFixedSize(30, 30)
+            n.setAlignment(Qt.AlignCenter)
+            t = QWidget()
+            tl = QVBoxLayout(t)
+            tl.setContentsMargins(0, 0, 0, 0)
+            tl.setSpacing(1)
+            t1, t2 = QLabel(title), make_label(sub, "caption")
+            tl.addWidget(t1)
+            tl.addWidget(t2)
+            cl.addWidget(n)
+            cl.addWidget(t)
+            sl.addWidget(c)
+            self.step_labels.append((n, t1, t2))
+        sl.addStretch(1)
+        root.addWidget(steps)
+        self.set_step_color(0)
+
+        # 操作按钮
+        brow = QWidget()
+        bl = QHBoxLayout(brow)
+        bl.setContentsMargins(0, 0, 0, 0)
+        win.rerun_btn = QPushButton("重新生成")
+        win.rerun_btn.setFixedHeight(40)
+        win.rerun_btn.setToolTip("用当前设置从头再跑一遍（已有恢复点时会询问是否继续）。")
+        win.rerun_btn.clicked.connect(win.start_pipeline)
+        bl.addWidget(win.rerun_btn)
         win.stop_btn = QPushButton("停止")
         win.stop_btn.setFixedHeight(40)
         win.stop_btn.setEnabled(False)
@@ -317,6 +436,9 @@ class TrainPage(QWidget):
         self.fail_cause.setText(cause)
         self.fail_advice.setText("怎么办：" + advice)
         self.fail_card.setVisible(True)
+        # 卡片在运行页；用户可能正停在别的页（比如去设置里改路径），
+        # 出错时直接跳过来，否则这句「为什么」等于没说。
+        self.win.nav.setCurrentRow(self.win.NAV.index("运行"))
 
     def set_step_color(self, n):
         """圆形步骤徽章：未开始灰边 / 当前蓝底白字 / 完成绿底白勾。"""
@@ -493,108 +615,32 @@ class SettingsPage(QWidget):
         root.setContentsMargins(28, 20, 28, 20)
         root.setSpacing(12)
         root.addWidget(make_label("设置", "title"))
+        root.addWidget(make_label("只在工具路径变动时需要来这一页；训练参数在「训练设置」页。",
+                                  "caption"))
 
         card = Card("工具路径")
-        win.colmap_edit = self._path_row(card.body_layout, "COLMAP:", win.colmap_var,
-                                         file=True, tip="COLMAP.bat 或 colmap.exe，留空则自动选择。")
-        win.vkpy_edit = self._path_row(card.body_layout, "VkSplat Python:", win.vksplat_py_var,
-                                       file=True, tip="运行训练的 Python，通常为 env/vksplat/python.exe。")
-        win.vkgs_edit = self._path_row(card.body_layout, "VKGS 查看器:", win.vkgs_var,
-                                       file=True, tip="vk_gaussian_splatting.exe，缺失不影响训练。")
+        win.colmap_edit = _path_row(
+            self, card.body_layout, "COLMAP:", win.colmap_var,
+            file=True, tip="COLMAP.bat 或 colmap.exe，留空则自动选择。")
+        win.vkpy_edit = _path_row(
+            self, card.body_layout, "VkSplat Python:", win.vksplat_py_var,
+            file=True, tip="运行训练的 Python，通常为 env/vksplat/python.exe。")
+        win.vkgs_edit = _path_row(
+            self, card.body_layout, "VKGS 查看器:", win.vkgs_var,
+            file=True, tip="vk_gaussian_splatting.exe，缺失不影响训练。")
         root.addWidget(card)
 
-        card = Card("项目工作区")
-        win.ws_edit = self._path_row(card.body_layout, "工作区文件夹:", win.ws_var, file=False,
-                                     tip="留空时自动在 workspaces/ 下按照片文件夹名生成。")
-        root.addWidget(card)
-
-        card = Card("VkSplat 训练参数")
+        card = Card("保存")
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
-        rl.addWidget(self._lab("图片缓存："))
-        win.cache_combo = QComboBox()
-        win.cache_combo.addItems(["cpu", "gpu"])
-        win.cache_combo.setCurrentText("cpu")
-        win.cache_combo.setToolTip("gpu 更快但占显存；核显或显存紧张选 cpu。")
-        rl.addWidget(win.cache_combo)
-        rl.addSpacing(16)
-        rl.addWidget(self._lab("图像分辨率："))
-        win.res_combo = QComboBox()
-        win.res_combo.addItems([RES_AUTO] + list(RES_DIR_MAP))
-        win.res_combo.setToolTip("训练图像尺寸；跟随档位＝快速 1/4、标准 1/2、高质量原图，\n"
-                                 "并按显存自动降档（核显/不足 8GB 的独显最高 1/2，防显存溢出）。")
-        rl.addWidget(win.res_combo)
-        rl.addStretch(1)
-        card.body_layout.addWidget(row)
-
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.addWidget(self._lab("最大图片尺寸："))
-        win.maximg_spin = QSpinBox()
-        win.maximg_spin.setRange(256, 20000)
-        win.maximg_spin.setValue(1600)
-        win.maximg_spin.setToolTip("COLMAP 特征提取时图片长边的上限（默认 1600）。")
-        rl.addWidget(win.maximg_spin)
-        rl.addStretch(1)
-        card.body_layout.addWidget(row)
-
-        win.mask_edit = self._path_row(card.body_layout, "Mask 文件夹:", win.mask_var,
-                                       file=False,
-                                       tip="遮罩图须与照片同名（IMG_001.jpg → IMG_001.jpg.png），"
-                                           "黑色区域训练时忽略；留空不使用。")
-        root.addWidget(card)
-
-        card = Card("分步操作")
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        b1 = QPushButton("只用 COLMAP（空间定位）")
-        b1.setToolTip("只跑稀疏重建，不训练。")
-        b1.clicked.connect(win.start_colmap_only)
-        b2 = QPushButton("只用训练（生成模型）")
-        b2.setToolTip("复用已有 sparse/0，不重跑 COLMAP。")
-        b2.clicked.connect(win.start_train_only)
-        b3 = QPushButton("保存设置")
-        b3.clicked.connect(win.save_options)
-        for b in (b1, b2, b3):
-            rl.addWidget(b)
+        b = QPushButton("保存设置")
+        b.clicked.connect(win.save_options)
+        rl.addWidget(b)
         rl.addStretch(1)
         card.body_layout.addWidget(row)
         root.addWidget(card)
         root.addStretch(1)
-
-    @staticmethod
-    def _lab(text):
-        lab = QLabel(text)
-        lab.setFixedWidth(110)
-        return lab
-
-    def _path_row(self, lay, label, var, file=True, tip=None):
-        w = QWidget()
-        h = QHBoxLayout(w)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.addWidget(self._lab(label))
-        edit = QLineEdit()
-        edit.setText(var.get())
-        if tip:
-            edit.setToolTip(tip)
-        btn = QPushButton("浏览")
-
-        def pick():
-            if file:
-                p, _ = QFileDialog.getOpenFileName(self, label)
-            else:
-                p = QFileDialog.getExistingDirectory(self, label)
-            if p:
-                edit.setText(relativize_path(p))
-
-        btn.clicked.connect(pick)
-        h.addWidget(edit, 1)
-        h.addWidget(btn)
-        lay.addWidget(w)
-        return edit
 
 
 # ==================================================================== 日志页 ====
@@ -783,7 +829,7 @@ class SyscheckDialog(QDialog):
 
 # ==================================================================== 主窗口 ====
 class MainWindow(QMainWindow, PipelineCore):
-    NAV = ("训练", "历史模型", "设置", "日志")
+    NAV = ("照片", "训练设置", "运行", "历史模型", "设置", "日志")
 
     def __init__(self):
         PipelineCore.init_core(self)
@@ -845,11 +891,14 @@ class MainWindow(QMainWindow, PipelineCore):
 
         self.stack = QStackedWidget()
 
-        self.train_page = TrainPage(self)
+        self.photo_page = PhotoPage(self)
+        self.train_settings_page = TrainSettingsPage(self)
+        self.run_page = RunPage(self)
         self.history_page = HistoryPage(self)
         self.settings_page = SettingsPage(self)
         self.log_page = LogPage(self)
-        for p in (self.train_page, self.history_page, self.settings_page, self.log_page):
+        for p in (self.photo_page, self.train_settings_page, self.run_page,
+                  self.history_page, self.settings_page, self.log_page):
             self.stack.addWidget(p)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
 
@@ -1094,12 +1143,12 @@ class MainWindow(QMainWindow, PipelineCore):
     # ------------------------------------------------ signals ----
     def _connect_signals(self):
         self.sig.status.connect(lambda t: self.status_lab.setText(t))
-        self.sig.step.connect(self.train_page.set_step_color)
+        self.sig.step.connect(self.run_page.set_step_color)
         self.sig.workspace.connect(self.ws_edit.setText)
         self.sig.progress.connect(self._on_progress)
         self.sig.running.connect(self._apply_running)
         self.sig.eval_ready.connect(self._show_eval)
-        self.sig.failure.connect(self.train_page.set_failure)
+        self.sig.failure.connect(self.run_page.set_failure)
         self.sig.capture.connect(self._on_capture_report)
         self.sig.precheck.connect(self._on_precheck)
         self.sig.log.connect(self.log_page.append_line)
@@ -1119,12 +1168,13 @@ class MainWindow(QMainWindow, PipelineCore):
         self.det_bar.setVisible(running and not indeterminate)
         if running:
             self.det_bar.setValue(0)
-            self.train_page.fail_card.setVisible(False)   # 新一轮开始：收起上一次的报错
+            self.run_page.fail_card.setVisible(False)   # 新一轮开始：收起上一次的报错
             # 上一轮的百分比桶作废，否则新一次的评测前 10% 会被当成「已经记过」
             self._tqdm_bucket.clear()
-        # 运行中禁用参数（训练页 + 设置页），避免中途改设置。
-        # 先统一处理，再单独设置开始/停止按钮，避免被循环覆盖。
-        for page in (self.train_page, self.settings_page):
+        # 运行中禁用参数（照片页 + 训练设置页 + 设置页），避免中途改设置。
+        # 先统一处理，再单独设置运行页的按钮，避免被循环覆盖。
+        for page in (self.photo_page, self.train_settings_page, self.settings_page,
+                     self.run_page):
             exempt = getattr(page, "_runtime_exempt_widgets", ())
             for typ in (QLineEdit, QSpinBox, QComboBox, QRadioButton,
                         QCheckBox, QPushButton):
@@ -1133,6 +1183,7 @@ class MainWindow(QMainWindow, PipelineCore):
                         continue
                     w.setEnabled(not running)
         self.run_btn.setEnabled(not running)
+        self.rerun_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
 
     # ------------------------------------------------ PipelineCore 宿主 ----
@@ -1495,14 +1546,18 @@ class MainWindow(QMainWindow, PipelineCore):
     # 三个开始入口（按钮绑定）
     def start_pipeline(self):
         self._sync_edits_to_vars()
+        # 开始后直接切到运行页：进度与排错都在那里，不用用户自己找
+        self.nav.setCurrentRow(self.NAV.index("运行"))
         self.start(True, True)
 
     def start_colmap_only(self):
         self._sync_edits_to_vars()
+        self.nav.setCurrentRow(self.NAV.index("运行"))
         self.start(True, False)
 
     def start_train_only(self):
         self._sync_edits_to_vars()
+        self.nav.setCurrentRow(self.NAV.index("运行"))
         self.start(False, True)
 
     def _sync_edits_to_vars(self):

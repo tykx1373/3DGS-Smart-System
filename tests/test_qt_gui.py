@@ -193,13 +193,13 @@ class QtGuiTestCase(unittest.TestCase):
 
     def test_failure_card_shows_on_panel_and_resets_on_next_run(self):
         """失败卡片要真的出现在训练页，且下一轮开始时收起。"""
-        card = self.win.train_page.fail_card
+        card = self.win.run_page.fail_card
         self.assertFalse(card.isVisibleTo(self.win))
         self.win.show_failure("显存不够，分配失败", "把质量档位调低一档后重试")
         _app.processEvents()   # 同线程信号是直连的，这里只是保险
         self.assertTrue(card.isVisibleTo(self.win))
-        self.assertIn("显存", self.win.train_page.fail_cause.text())
-        self.assertIn("质量档位", self.win.train_page.fail_advice.text())
+        self.assertIn("显存", self.win.run_page.fail_cause.text())
+        self.assertIn("质量档位", self.win.run_page.fail_advice.text())
         # 新一轮运行：卡片收起，但求助按钮不能被禁用扫描误伤
         self.win._apply_running(True, True)
         self.assertFalse(card.isVisibleTo(self.win))
@@ -412,6 +412,29 @@ class QtGuiTestCase(unittest.TestCase):
     def test_log_view_caps_block_count(self):
         """日志页有行数上限，长时间训练不会把内存堆爆。"""
         self.assertEqual(self.win.log_page.view.document().maximumBlockCount(), 5000)
+
+    def test_train_parameters_live_on_one_page(self):
+        """训练参数必须集中在「训练设置」页，不必为改分辨率跑去设置页。"""
+        page = self.win.train_settings_page
+        for w in (self.win.steps_spin, self.win.mcmc_chk, self.win.eval_chk,
+                  self.win.lpips_chk, self.win.exposure_chk, self.win.res_combo,
+                  self.win.cache_combo, self.win.maximg_spin, self.win.mask_edit,
+                  self.win.ws_edit):
+            self.assertTrue(page.isAncestorOf(w), "该控件不在训练设置页")
+        # 设置页只留工具路径
+        self.assertFalse(self.win.settings_page.isAncestorOf(self.win.res_combo))
+        # 照片相关只在照片页
+        self.assertTrue(self.win.photo_page.isAncestorOf(self.win.img_edit))
+        self.assertFalse(page.isAncestorOf(self.win.img_edit))
+
+    def test_start_switches_to_run_page(self):
+        """点开始后自动切到运行页：进度与排错都在那里。"""
+        from unittest import mock
+        self.win.nav.setCurrentRow(self.win.NAV.index("训练设置"))
+        with mock.patch.object(self.win, "start") as m:
+            self.win.start_pipeline()
+        self.assertEqual(self.win.nav.currentRow(), self.win.NAV.index("运行"))
+        m.assert_called_once()
 
     def test_share_splat_actually_generates_file(self):
         """端到端跑 share_splat 本身。
