@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -116,25 +117,29 @@ def format_api_version(dev):
 # ------------------------------------------------------------ vulkan devices ----
 _devices_cache = None
 _devices_error = None
+# vksplat 的枚举是原生调用（Vulkan 实例/设备的创建与销毁）。自检弹窗、运行前
+# 耗时预估都可能各自起线程，两个原生枚举撞在一起没有保证；这里串行化。
+_devices_lock = threading.Lock()
 
 
 def enumerate_vulkan_devices(force=False):
     """返回 (devices, error)。devices 为 vksplat 给出的物理设备能力列表。"""
     global _devices_cache, _devices_error
-    if _devices_cache is not None and not force:
-        return _devices_cache, _devices_error
+    with _devices_lock:
+        if _devices_cache is not None and not force:
+            return _devices_cache, _devices_error
 
-    devices, error = [], None
-    try:
-        if VKSPLAT_SRC not in sys.path:
-            sys.path.insert(0, VKSPLAT_SRC)
-        import vksplat
-        devices = list(vksplat.VkSplat().enumerate_devices())
-    except Exception as e:  # 驱动缺失 / .pyd 不匹配 / 无 Vulkan 设备
-        error = f"{type(e).__name__}: {e}"
+        devices, error = [], None
+        try:
+            if VKSPLAT_SRC not in sys.path:
+                sys.path.insert(0, VKSPLAT_SRC)
+            import vksplat
+            devices = list(vksplat.VkSplat().enumerate_devices())
+        except Exception as e:  # 驱动缺失 / .pyd 不匹配 / 无 Vulkan 设备
+            error = f"{type(e).__name__}: {e}"
 
-    _devices_cache, _devices_error = devices, error
-    return devices, error
+        _devices_cache, _devices_error = devices, error
+        return devices, error
 
 
 def pick_device(devices):

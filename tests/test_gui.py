@@ -742,7 +742,7 @@ class TestProgressSpans(unittest.TestCase):
         括号里的 num_reg_frames 才是已定位张数，所以分子取 96 而不是 #64。
         """
         self.app._set_span(0.5, 1.0)
-        self.app._colmap_t0 = time.time() - 120
+        self.app.progress.colmap_t0 = time.time() - 120
         self.app._colmap_line_progress(
             "I20260930 15:20:26.003764 28524 incremental_pipeline.cc:620]"
             " Registering image #64 (num_reg_frames=96)", 128)
@@ -774,7 +774,48 @@ class TestProgressSpans(unittest.TestCase):
         self.app._colmap_line_progress("Registering image #7 (num_reg_frames=1)", 128)
         self.assertEqual(len(self.got), 1)
         self.assertNotIn("预计还需", self.got[0][1])
-        self.assertIsNotNone(self.app._colmap_t0)
+        self.assertIsNotNone(self.app.progress.colmap_t0)
+
+    def test_feature_extraction_line_drives_progress(self):
+        """特征提取也要动起来：Processed file [N/M] 是它的逐张进度。"""
+        self.app._set_span(0.0, 0.35)
+        self.app._colmap_line_progress("Processed file [32/128]", 128)
+        frac, detail = self.got[-1]
+        self.assertAlmostEqual(frac, 0.35 * (32 / 128.0), places=2)
+        self.assertIn("32/128", detail)
+        self.assertIn("正在提取照片特征", detail)
+
+    def test_stage_plan_skips_unplanned_stages(self):
+        """本次不跑的段（比如关掉评估）不能把时间线点亮。"""
+        got = []
+        self.app.set_stage = got.append
+        self.app._stage_plan([4, 5, 7])
+        self.app._stage(6)
+        self.assertEqual(got, [])
+        self.app._stage(5)
+        self.app._stage(4)          # 倒退不接受
+        self.assertEqual(got, [5])
+
+    def test_training_output_moves_to_eval_stage(self):
+        """训练器不打印「进入评估」，只能从 Writing PLY 这些固定文案认。"""
+        got = []
+        self.app.set_stage = got.append
+        self.app.set_status = lambda t: None
+        self.app._stage_plan([5, 6])
+        self.app._stage(5)
+        self.app._stage_from_output("Training:  50%|#####     | 7500/15000")
+        self.app._stage_from_output("Writing PLY")
+        self.assertEqual(got, [5, 6])
+
+    def test_eval_stage_ignored_when_skipped(self):
+        """关掉评估时，Writing PLY 不能让时间线亮起「评估」段。"""
+        got = []
+        self.app.set_stage = got.append
+        self.app.set_status = lambda t: None
+        self.app._stage_plan([5, 7])
+        self.app._stage(5)
+        self.app._stage_from_output("Writing PLY")
+        self.assertEqual(got, [5])
 
 
 class TestPhotoPrecheck(unittest.TestCase):
@@ -1002,6 +1043,183 @@ class TestVersionSingleSource(unittest.TestCase):
         from app_version import APP_VERSION
         report = d.build_report(ROOT, doctor_json=None, cfg={})
         self.assertIn(f"版本       {APP_VERSION}", report.splitlines()[:5][2])
+
+
+class TestColmapReuse(unittest.TestCase):
+    """照片和参数都没变时允许复用上次的空间定位；任何一处变化都必须重算。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cmreuse_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.img = os.path.join(self.tmp, "imgs")
+        self.ws = os.path.join(self.tmp, "ws")
+        os.makedirs(self.img)
+        sparse = os.path.join(self.ws, "sparse", "0")
+        os.makedirs(sparse)
+        for name in ("cameras.bin", "images.bin", "points3D.bin"):
+            open(os.path.join(sparse, name), "wb").close()
+        for i in range(3):
+            with open(os.path.join(self.img, "p%d.jpg" % i), "wb") as f:
+                f.write(b"x" * 10)
+        q.write_colmap_meta(self.ws, self.img, 1600)
+
+    def test_same_photos_and_size_can_reuse(self):
+        ok, why = q.colmap_meta_matches(self.ws, self.img, 1600)
+        self.assertTrue(ok, why)
+
+    def test_changed_max_image_size_recomputes(self):
+        ok, why = q.colmap_meta_matches(self.ws, self.img, 2048)
+        self.assertFalse(ok)
+        self.assertIn("尺寸", why)
+
+    def test_changed_photo_set_recomputes(self):
+        """同一批文件名、内容大小变了（重新导出/替换照片）也算变了。"""
+        with open(os.path.join(self.img, "p0.jpg"), "ab") as f:
+            f.write(b"y")
+        ok, why = q.colmap_meta_matches(self.ws, self.img, 1600)
+        self.assertFalse(ok)
+        self.assertIn("照片", why)
+
+    def test_added_photo_recomputes(self):
+        with open(os.path.join(self.img, "p3.jpg"), "wb") as f:
+            f.write(b"x")
+        self.assertFalse(q.colmap_meta_matches(self.ws, self.img, 1600)[0])
+
+    def test_missing_meta_recomputes(self):
+        os.remove(os.path.join(self.ws, q.COLMAP_META_FILE))
+        ok, why = q.colmap_meta_matches(self.ws, self.img, 1600)
+        self.assertFalse(ok)
+        self.assertIn("参数记录", why)
+
+    def test_incomplete_sparse_recomputes(self):
+        """sparse/0 只剩一半时不能复用，否则训练会读到坏数据。"""
+        os.remove(os.path.join(self.ws, "sparse", "0", "images.bin"))
+        ok, why = q.colmap_meta_matches(self.ws, self.img, 1600)
+        self.assertFalse(ok)
+        self.assertIn("稀疏重建", why)
+
+    def test_pipeline_thread_reuses_sparse_and_skips_colmap(self):
+        """选复用后工作线程不能再跑 COLMAP，直接把 sparse/0 交给训练。"""
+        class _V:
+            def __init__(self, v):
+                self._v = v
+
+            def get(self):
+                return self._v
+
+            def set(self, v):
+                self._v = v
+
+        app = q.PipelineCore.__new__(q.PipelineCore)
+        app.init_core()
+        for name in ("_log", "set_status", "set_step", "set_workspace",
+                     "_progress", "_notify_failure", "set_stage_plan", "set_stage"):
+            setattr(app, name, lambda *a, **k: None)
+        app.set_running = lambda *a, **k: None
+        app.img_var = _V(self.img)
+        app.ws_var = _V(self.ws)
+        app.max_img_var = _V(1600)
+        app.quality_var = _V("快速")
+        app.vs_steps_var = _V(5000)
+        app._run_colmap = lambda *a: self.fail("复用时不该再跑 COLMAP")
+        got = {}
+        app._run_train = lambda ws, img, sparse, out: (
+            got.update(sparse=sparse, ws=ws), True)[1]
+        app._run_viewer = lambda *a: None
+        app.pipeline_thread(do_colmap=True, do_train=True, reuse_colmap=True)
+        self.assertEqual(got["ws"], self.ws)
+        self.assertEqual(got["sparse"], os.path.join(self.ws, "sparse", "0"))
+
+
+class TestTrainSummary(unittest.TestCase):
+    """训练完成后要展示的实测值：不能只留在日志里。"""
+
+    def setUp(self):
+        self.app = _bare_app()
+        self.app.init_core()
+        self.logs = []
+        self.app._log = self.logs.append
+        self.tmp = tempfile.mkdtemp(prefix="trainsum_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_end_of_training_lines_are_captured(self):
+        self.app._record_train_stats("Time elapsed: 40.5 seconds")
+        self.app._record_train_stats("Peak VRAM usage: 0.43 GiB")
+        self.app._record_train_stats("Num splats: 123456")
+        stats = self.app._train_summary()
+        self.assertEqual(stats["seconds"], 40.5)
+        self.assertEqual(stats["peak_vram_gb"], 0.43)
+        self.assertEqual(stats["num_splats"], 123456)
+
+    def test_progress_is_fallback_for_older_trainer(self):
+        """旧版训练器不打印结束行时，至少用 PROGRESS 里的过程值兜底。"""
+        self.app._record_train_stats("PROGRESS: 5000/5000 61.2 0.0 98765 512")
+        stats = self.app._train_summary()
+        self.assertEqual(stats["seconds"], 61.2)
+        self.assertEqual(stats["num_splats"], 98765)
+        self.assertEqual(stats["vram_mb"], 512)
+
+    def test_eval_can_be_missing_and_summary_still_reported(self):
+        """评测关掉时也要弹训练完成：参数/耗时本身对用户有价值。"""
+        got = []
+        self.app.show_eval = lambda mean, stats: got.append((mean, stats))
+        self.app.progress.train_params = {"steps": 5000, "quality": "快速", "res_label": "原分辨率"}
+        self.app.progress.train_stats = {"seconds": 40.5, "num_splats": 123}
+        self.app._report_eval(os.path.join(self.tmp, "no_such_eval.json"))
+        self.assertEqual(len(got), 1)
+        self.assertIsNone(got[0][0])
+        self.assertEqual(got[0][1]["steps"], 5000)
+        self.assertEqual(got[0][1]["seconds"], 40.5)
+
+
+class TestTrainConfigReuse(unittest.TestCase):
+    """相同照片 + 相同设置训练过：提示；任何一处变化都不提示。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="traincfg_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.img = os.path.join(self.tmp, "imgs")
+        self.ws = os.path.join(self.tmp, "ws")
+        self.model = os.path.join(self.tmp, "outputs", "model")
+        os.makedirs(self.img)
+        os.makedirs(self.ws)
+        os.makedirs(self.model)
+        for i in range(3):
+            with open(os.path.join(self.img, "p%d.jpg" % i), "wb") as f:
+                f.write(b"x" * 10)
+        self.ply = os.path.join(self.ws, "splat.ply")
+        with open(self.ply, "wb") as f:
+            f.write(b"ply")
+        self.settings = {"quality": "快速", "steps": 5000,
+                         "res_choice": "跟随质量档位", "mcmc": True,
+                         "run_eval": False, "exposure_fix": False,
+                         "mask_dir": "", "max_image_size": 1600}
+        q.write_train_config(self.ws, self.img, self.settings, self.ply,
+                             model_dir=self.model, actual={"seconds": 40.5})
+
+    def test_same_settings_and_photos_match(self):
+        ok, cfg = q.train_config_matches(self.ws, self.img, self.settings)
+        self.assertTrue(ok)
+        self.assertEqual(cfg["actual"]["seconds"], 40.5)
+        self.assertTrue(os.path.isfile(os.path.join(self.model, q.TRAIN_CONFIG_FILE)))
+
+    def test_changed_steps_do_not_match(self):
+        other = dict(self.settings, steps=8000)
+        self.assertFalse(q.train_config_matches(self.ws, self.img, other)[0])
+
+    def test_changed_photos_do_not_match(self):
+        with open(os.path.join(self.img, "p0.jpg"), "ab") as f:
+            f.write(b"y")
+        self.assertFalse(q.train_config_matches(self.ws, self.img, self.settings)[0])
+
+    def test_deleted_model_does_not_match(self):
+        """模型被删了还提示「已经训练过」，点查看只会扑空。"""
+        os.remove(self.ply)
+        self.assertFalse(q.train_config_matches(self.ws, self.img, self.settings)[0])
+
+    def test_missing_record_does_not_match(self):
+        os.remove(os.path.join(self.ws, q.TRAIN_CONFIG_FILE))
+        self.assertFalse(q.train_config_matches(self.ws, self.img, self.settings)[0])
 
 
 if __name__ == "__main__":

@@ -11,10 +11,13 @@ quick_gui.MainWindow（PySide6/Fluent）继承 PipelineCore。
     exposure_fix_var, vksplat_py_var, colmap_var, vkgs_var
   回调（核心可能在工作线程调用，宿主自己负责线程封送）:
     _log(text), set_status(text), set_step(n), set_running(running, indeterminate),
-    set_progress(frac, detail), set_workspace(path), show_eval(mean),
-    show_failure(cause, advice)
+    set_progress(frac, detail), set_workspace(path), show_eval(mean, stats),
+    show_failure(cause, advice),
+    set_stage(n), set_stage_plan(stages)   # 7 段进度时间线（宿主可不实现）
   仅 UI 线程调用的询问:
-    ask_resume(), ask_continue(do_colmap) -> bool
+    ask_resume(), ask_continue(do_colmap) -> bool,
+    ask_reuse_colmap(n_imgs, ws_dir) -> bool,      # 有可复用的空间定位时问一句
+    ask_retrain_existing(ws_dir, cfg) -> str       # "retrain" / "view" / "cancel"
   工作线程发起、宿主负责弹窗并等待回答的询问:
     ask_capture_report(report) -> bool   # False = 用户选择先去补拍
 """
@@ -28,7 +31,6 @@ import tempfile
 import subprocess
 import threading
 from collections import deque
-from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))   # 3DGS/gui
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)                # 3DGS
@@ -39,6 +41,25 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 import diagnostics  # noqa: E402
 import syscheck  # noqa: E402
+from progress_tracker import ProgressTracker, _PROGRESS_RE  # noqa: E402
+
+# 拆分后仍然从这里重新导出：界面与测试沿用 pipeline_core.xxx 的旧调用方式
+from dataset_tools import (  # noqa: E402
+    IMAGE_EXTS, SEQUENTIAL_MATCHER_THRESHOLD, LOW_REGISTRATION_RATE,
+    CAPTURE_WARN_RATE, pick_colmap_matcher, parse_registered_images,
+    read_registered_names, blur_scores, pick_blurry, build_capture_report,
+    photo_precheck_text, capture_report_text,
+)
+from eval_metrics import load_eval_mean, judge_eval_metrics  # noqa: E402
+from model_store import (  # noqa: E402
+    scan_history_models, is_path_within, delete_history_model,
+)
+from workspace_meta import (  # noqa: E402
+    COLMAP_META_FILE, COLMAP_META_VERSION,
+    write_colmap_meta, colmap_meta_matches,
+    TRAIN_CONFIG_FILE, TRAIN_CONFIG_VERSION,
+    write_train_config, train_config_matches,
+)
 
 # 所有默认路径相对 PROJECT_ROOT 存储
 DEFAULT_COLMAP = os.path.join("tools", "colmap-x64-windows-cuda", "COLMAP.bat")
@@ -108,7 +129,6 @@ RES_DIR_MAP = {
     "原分辨率（images）": "images",
 }
 RES_DEFAULT_BY_QUALITY = {"快速": "images_4", "标准": "images_2", "高质量": "images"}
-IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 # 降采样/归一化副本里标记“已按 EXIF 方向纠正”的文件。COLMAP 会应用 EXIF 方向
 # 而 cv2 / stb_image 不会：手机竖拍照片（orientation=6/8）若不预旋转，
 # 训练图与位姿差 90°，模型直接训废。marker 用于让旧的无纠偏副本自动失效重建。
@@ -126,12 +146,13 @@ QUALITY_PRESETS = {
     "高质量": (30000, "约 20 分钟+（全分辨率），细节最丰富"),
 }
 
+# 认不出具体原因时的兜底说法：主面板必须始终有内容可显示，
+# 否则新手面对一个不动的进度条完全不知道下一步做什么。
+GENERIC_FAILURE = ("这一步没有跑成功（原因没能自动识别）",
+                   "展开下方的运行日志看最后几行，或点「导出诊断包」把日志发给开发者。")
+
 # tqdm 走 stderr 且用 \r 刷新，会把 stdout 的 PROGRESS 标记挤到行中间，
 # 因此这里不要求行首匹配，而是在整行内查找进度标记。
-# 末尾的显存字段是可选的：旧版训练器只报 5 项，缺了也不能当成解析失败。
-_PROGRESS_RE = re.compile(
-    r"PROGRESS:\s*(\d+)/(\d+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)(?:\s+(\d+))?")
-
 # 通用 tqdm 帧，形如 "Running eval:  44%|███▍ | 7/16 [02:20<03:04, 20.5s/it]"。
 # 只匹配 ASCII 阶段名，避免误吃中文或路径文本。
 _TQDM_RE = re.compile(
@@ -139,36 +160,6 @@ _TQDM_RE = re.compile(
     r"[^|]*\|\s*(?P<n>\d+)/(?P<total>\d+)"
     r"(?:\s*\[(?P<elapsed>[0-9:]+)<(?P<eta>[0-9:?]+))?"
 )
-
-# ---- COLMAP 匹配器与注册率 ----
-# exhaustive 匹配是 O(n²)：超过约 100 张后（尤其 noCUDA 版）会慢到不可用。
-SEQUENTIAL_MATCHER_THRESHOLD = 100
-# mapper 后注册率（成功定位的照片占比）低于此值时提示补拍——
-# 提前诊断比等训练阶段报 "Failed to load image" 好得多。
-LOW_REGISTRATION_RATE = 0.7
-
-# 认不出具体原因时的兜底说法：主面板必须始终有内容可显示，
-# 否则新手面对一个不动的进度条完全不知道下一步做什么。
-GENERIC_FAILURE = ("这一步没有跑成功（原因没能自动识别）",
-                   "展开下方的运行日志看最后几行，或点「导出诊断包」把日志发给开发者。")
-
-# ---- 采集质量预检（P7）----
-# 注册率低于 LOW_REGISTRATION_RATE 属于「多半要失败」，介于两者之间算提醒。
-CAPTURE_WARN_RATE = 0.85
-BLUR_CHECK_MAX_EDGE = 640    # 清晰度打分前先缩图，控制耗时
-BLUR_RATIO = 0.4             # 低于本批中位数 40% 的算「发虚/细节太少」
-BLUR_ABS_FLOOR = 12.0        # 绝对下限：整批都很糊时也不至于一张都不报
-BLUR_MAX_LIST = 12           # 最多列几张，多了没人看
-BLUR_MIN_SAMPLES = 8         # 少于 8 张时中位数没有意义，跳过模糊判定
-CAPTURE_ASK_TIMEOUT = 300    # 等用户回答补拍与否的秒数上限
-MIN_PHOTOS_RECOMMENDED = 30  # 少于这个张数，稀疏重建很容易失败（选照片时就提醒）
-
-# COLMAP mapper 每成功定位一张就打印一行；用它驱动重建阶段的真实进度。
-# 真实格式（对照 colmap.exe 内的格式串核实）：
-#   Registering image #50 (num_reg_frames=2)
-# #50 是数据库里的图像 id、括号里才是「已定位张数」——两者不能混用
-_COLMAP_REGISTER_RE = re.compile(
-    r"Registering image #(\d+)(?:\s*\(num_reg_frames=(\d+)\))?")
 
 
 # ------------------------------------------------------------ pure helpers ----
@@ -232,321 +223,6 @@ def _cfg_choice(cfg, key, valid, default):
     return v if v in valid else default
 
 
-def load_eval_mean(json_path):
-    """安全读取 eval.json 的 mean 指标；文件缺失/损坏返回 None。"""
-    try:
-        with open(json_path, encoding="utf-8") as f:
-            data = json.load(f)
-        mean = data.get("mean")
-        return mean if isinstance(mean, dict) else None
-    except Exception:
-        return None
-
-
-def judge_eval_metrics(mean_obj):
-    """把 eval.json 的 mean 指标转成给用户看的人话。
-
-    返回 (判定文案, 等级, 明细行)。等级 good / mid / bad / none，
-    PSNR 是主判定（最直观）。LPIPS 权重未下载时 eval.json 里没有这两项，
-    缺哪行就不显示哪行。明细行形如 (指标名, 数值串, 判读)。
-    """
-    if not isinstance(mean_obj, dict):
-        return "未拿到评测指标", "none", []
-    try:
-        psnr = float(mean_obj["psnr"])
-    except (KeyError, TypeError, ValueError):
-        return "未拿到评测指标", "none", []
-    try:
-        ssim = float(mean_obj.get("ssim"))
-    except (TypeError, ValueError):
-        ssim = None
-
-    if psnr >= 25:
-        verdict, level = "质量不错", "good"
-    elif psnr >= 20:
-        verdict, level = "质量一般，可尝试更高档位或更多训练步数", "mid"
-    else:
-        verdict, level = "质量偏低：检查照片是否清晰、重叠是否足够，或提高档位重训", "bad"
-
-    rows = [("PSNR", f"{psnr:.2f} dB",
-             "像素误差，越高越好（>25 不错，<20 通常有问题）")]
-    if ssim is not None:
-        rows.append(("SSIM", f"{ssim:.3f}",
-                     "结构相似度，越高越好（0~1）"))
-    for key, label in (("lpips_vgg", "LPIPS VGG"), ("lpips_alex", "LPIPS Alex")):
-        try:
-            v = float(mean_obj[key])
-        except (KeyError, TypeError, ValueError):
-            continue
-        rows.append((label, f"{v:.3f}", "感知相似度，越低越好"))
-    return verdict, level, rows
-
-
-# 历史模型列表：扫描 outputs/ 用
-_HIST_NAME_RE = re.compile(r"^vksplat_(\d+)steps_(fast|standard|high)$", re.I)
-_HIST_QUALITY_ZH = {"fast": "快速", "standard": "标准", "high": "高质量"}
-
-
-def scan_history_models(outputs_dir):
-    """扫描 outputs/ 下的模型目录，返回按修改时间倒序的模型信息列表。
-
-    只有目录里至少有一个 .ply 才算一次成功产出（训练中途崩溃只留下
-    config/train.json 的目录不进列表）。每个元素：
-      name        目录名
-      dir         绝对路径
-      ply         主模型 PLY 路径（优先 splat.ply）
-      splat       同名 .splat 分享版路径（没有则为 None，可由 PLY 现转）
-      mtime       目录修改时间戳
-      steps/quality  训练步数与档位（从目录名或 config.json 推）
-      metrics      eval.json 的 mean（可能为 None）
-      level        good/mid/bad/none（复用指标判定）
-      size_mb      目录内 PLY 总大小
-    """
-    items = []
-    try:
-        names = os.listdir(outputs_dir)
-    except OSError:
-        return items
-    for name in names:
-        d = os.path.join(outputs_dir, name)
-        if not os.path.isdir(d):
-            continue
-        try:
-            plys = [f for f in os.listdir(d) if f.lower().endswith(".ply")]
-        except OSError:
-            continue
-        if not plys:
-            continue
-        ply = os.path.join(d, "splat.ply") if "splat.ply" in plys \
-            else os.path.join(d, sorted(plys)[0])
-        try:
-            splats = [f for f in os.listdir(d) if f.lower().endswith(".splat")]
-        except OSError:
-            splats = []
-        want = name + ".splat"
-        splat = os.path.join(d, want) if want in splats \
-            else (os.path.join(d, sorted(splats)[0]) if splats else None)
-        size_mb = 0.0
-        for f in plys:
-            try:
-                size_mb += os.path.getsize(os.path.join(d, f))
-            except OSError:
-                pass
-        size_mb = round(size_mb / 1024 / 1024, 1)
-
-        steps, quality = None, None
-        m = _HIST_NAME_RE.match(name)
-        if m:
-            steps, quality = int(m.group(1)), m.group(2).lower()
-        else:
-            try:
-                with open(os.path.join(d, "config.json"), encoding="utf-8") as f:
-                    cfg = json.load(f)
-                steps = int(cfg.get("train_steps"))
-            except (OSError, ValueError, TypeError):
-                steps = None
-
-        metrics = load_eval_mean(os.path.join(d, "eval.json"))
-        _verdict, level, _rows = judge_eval_metrics(metrics)
-        items.append({
-            "name": name,
-            "dir": d,
-            "ply": ply,
-            "splat": splat,
-            "mtime": os.path.getmtime(d),
-            "steps": steps,
-            "quality": _HIST_QUALITY_ZH.get(quality) if quality else None,
-            "metrics": metrics,
-            "level": level,
-            "size_mb": size_mb,
-        })
-    items.sort(key=lambda x: x["mtime"], reverse=True)
-    return items
-
-
-def is_path_within(path, parent):
-    """path 是否位于 parent 目录之内（防误删：历史列表只允许删 outputs/ 内目录）。"""
-    try:
-        path = os.path.abspath(path)
-        parent = os.path.abspath(parent)
-        return os.path.commonpath([path, parent]) == parent
-    except ValueError:
-        return False
-
-
-def delete_history_model(model_dir, outputs_dir):
-    """删除一个历史模型目录；越界或失败返回 (False, 原因)。"""
-    if not is_path_within(model_dir, outputs_dir) or not os.path.isdir(model_dir):
-        return False, "路径不在模型输出目录内"
-    try:
-        shutil.rmtree(model_dir)
-        return True, ""
-    except OSError as e:
-        return False, str(e)
-
-
-def pick_colmap_matcher(n_imgs):
-    """按照片数选匹配器：大图集用 sequential（要求文件名按拍摄顺序命名，
-    手机相机默认如此），小图集仍用最稳的 exhaustive。"""
-    return "sequential" if n_imgs > SEQUENTIAL_MATCHER_THRESHOLD else "exhaustive"
-
-
-def parse_registered_images(analyzer_output):
-    """从 `colmap model_analyzer` 输出解析 Registered images 数；解析不到返回 None。
-
-    注意 COLMAP 把这类统计写到 **stderr**，调用方要把 stdout 和 stderr 拼起来再传进来。
-    """
-    m = re.search(r"Registered images:\s*(\d+)", analyzer_output or "")
-    return int(m.group(1)) if m else None
-
-
-# ---------------------------------------------------------- 采集质量预检 ----
-def _walk_images_bin(blob, pt_bytes):
-    """按 COLMAP images.bin 布局走一遍；走不通就返回 None。
-
-    每个 2D 点在 COLMAP 3.x 占 32 字节（含 point2D_id），4.x 起只存
-    x / y / point3D_id 共 24 字节，所以调用方两种尺寸都要试一次。
-    只有「文件名全是可打印 ASCII」且「刚好走到文件末尾」才算解析成功，
-    宁可返回 None 什么都不提醒，也不能拿半截错位的结果去让用户补拍。
-    """
-    import struct
-    try:
-        (n_img,), off = struct.unpack_from("<q", blob, 0), 8
-        names = set()
-        for _ in range(n_img):
-            off += 4 + 8 * 7 + 4          # image_id + qvec(4×f64) + tvec(3×f64) + camera_id
-            end = blob.index(b"\x00", off)
-            raw = blob[off:end]
-            if not raw or not all(32 <= c < 127 for c in raw):
-                return None
-            names.add(raw.decode("ascii"))
-            off = end + 1
-            (n2d,), off = struct.unpack_from("<Q", blob, off), off + 8
-            off += n2d * pt_bytes
-        return names if off == len(blob) else None
-    except (OSError, ValueError, IndexError, struct.error):
-        return None
-
-
-def read_registered_names(sparse_zero):
-    """读 COLMAP sparse/0/images.bin，返回定位成功的照片文件名集合；解析不出返回 None。
-
-    images.bin 里只写定位成功的图像，所以「全部照片名 − 这个集合」就是没对上的那些。
-    检查失败绝不能影响训练，调用方一律按 None 跳过。
-    """
-    try:
-        with open(os.path.join(sparse_zero, "images.bin"), "rb") as f:
-            blob = f.read()
-    except OSError:
-        return None
-    for pt_bytes in (24, 32):
-        names = _walk_images_bin(blob, pt_bytes)
-        if names is not None:
-            return names
-    return None
-
-
-def blur_scores(folder, names):
-    """给照片打清晰度分（缩小图上算 Laplacian 方差），按分数升序返回 [(文件名, 分数)]。
-
-    用 IMREAD_REDUCED_GRAYSCALE_8 按 1/8 解码，上百张也就一两秒。
-    cv2 用不了或某张读不出来一律跳过——同上一条一样，只做提醒。
-    """
-    try:
-        import cv2
-    except ImportError:
-        return []
-    out = []
-    for name in names:
-        try:
-            img = cv2.imread(os.path.join(folder, name), cv2.IMREAD_REDUCED_GRAYSCALE_8)
-            if img is None:
-                continue
-            h, w = img.shape[:2]
-            edge = max(h, w)
-            if edge > BLUR_CHECK_MAX_EDGE:
-                s = BLUR_CHECK_MAX_EDGE / float(edge)
-                img = cv2.resize(img, (max(1, int(w * s)), max(1, int(h * s))),
-                                 interpolation=cv2.INTER_AREA)
-            out.append((name, float(cv2.Laplacian(img, cv2.CV_64F).var())))
-        except Exception:
-            continue
-    out.sort(key=lambda x: x[1])
-    return out
-
-
-def pick_blurry(scores, ratio=BLUR_RATIO, floor=BLUR_ABS_FLOOR, cap=BLUR_MAX_LIST):
-    """从清晰度分数里挑出「明显比同批照片差」的几张。
-
-    只用绝对阈值会在白墙/天空这类低纹理场景大面积误报，所以以本批中位数为基准；
-    floor 只保证「整批都很糊」时也能报出几张。
-    """
-    if len(scores) < BLUR_MIN_SAMPLES:
-        return []
-    vals = sorted(s for _n, s in scores)
-    bar = max(floor, ratio * vals[len(vals) // 2])
-    return [(n, s) for n, s in scores if s < bar][:cap]
-
-
-def build_capture_report(all_names, registered_names, blurry):
-    """汇总成采集质量报告；没什么可提醒的（或信息不全）时返回 None。"""
-    n_total = len(all_names or ())
-    if not n_total or registered_names is None:
-        return None
-    missing = sorted(set(all_names) - set(registered_names))
-    rate = (n_total - len(missing)) / float(n_total)
-    if rate < LOW_REGISTRATION_RATE:
-        level = "bad"
-    elif rate < CAPTURE_WARN_RATE or blurry:
-        level = "warn"
-    else:
-        return None
-    return {"n_total": n_total, "n_registered": n_total - len(missing),
-            "rate": rate, "missing": missing, "blurry": list(blurry or ()),
-            "level": level}
-
-
-def photo_precheck_text(n_imgs, blurry, min_imgs=MIN_PHOTOS_RECOMMENDED):
-    """选完照片时的本地预检结论：只说能确定的事，措辞留余地。
-
-    清晰度低有两种原因（拍糊了 / 场景本来就没纹理），这里分不开，
-    所以只能说"这几张值得再看一眼"，不能断言照片不合格。
-    """
-    if n_imgs < min_imgs:
-        return (f"只有 {n_imgs} 张照片，比建议的 {min_imgs} 张少：绕着物体多拍几圈，"
-                f"相邻照片重叠 60% 以上更容易成功。", "warn")
-    if blurry:
-        head = "、".join(n for n, _s in blurry[:6])
-        more = f" 等 {len(blurry)} 张" if len(blurry) > 6 else ""
-        return (f"{n_imgs} 张照片里有 {len(blurry)} 张偏虚或细节很少：{head}{more}。"
-                f"（白墙、天空这类本来细节就少，不一定是问题）", "warn")
-    return (f"{n_imgs} 张照片清晰度都正常，可以开始生成。", "ok")
-
-
-def capture_report_text(report, max_names=8):
-    """把报告写成新手能照做的句子：只说现象和怎么办，不出「注册率」这类词。"""
-    def _listing(items):
-        head = "、".join(items[:max_names])
-        return head + (f" 等 {len(items)} 张" if len(items) > max_names else "")
-
-    lines = []
-    if report["missing"]:
-        lines.append(f"有 {len(report['missing'])} 张照片没能对上位置："
-                     f"{_listing(report['missing'])}。")
-    if report["blurry"]:
-        lines.append("这几张看起来发虚或没什么细节："
-                     f"{_listing([n for n, _s in report['blurry']])}。")
-    lines.append("")
-    lines.append("怎么办：")
-    # 补拍建议按「有没有照片没对上」给，而不是只看等级：75% 注册率同样该绕一圈重拍。
-    if report["missing"]:
-        lines.append("· 绕着同一个物体再多走一圈补拍，每张跟上一张重叠一大半；")
-    if report["blurry"]:
-        lines.append("· 拿稳了再按快门，别边走边拍；光线暗就开灯或换个时间；")
-    lines.append("· 白墙、天空这类没细节的画面少拍，多拍旁边有特征的部分。")
-    return "\n".join(lines)
-
-
 # --------------------------------------------------------------- PipelineCore ----
 class PipelineCore:
     """Tk / Qt 两个界面共用的管线方法集合。宿主接口见模块 docstring。"""
@@ -558,26 +234,40 @@ class PipelineCore:
         self._last_failure_hint = None
         self._capture_report = None
         self._from_sample = False
-        # 整条管线共用一根进度条：每个阶段占一段，阶段内再按比例细分
-        self._p_lo, self._p_hi = 0.0, 1.0
-        self._colmap_span, self._train_span = (0.0, 1.0), (0.0, 1.0)
-        self._colmap_t0 = None
-        self._colmap_last_n = 0
+        # 进度分段、阶段时间线、训练实测值都交给 tracker；这里只留管线状态
+        self.progress = ProgressTracker(self)
         # 训练进度里「显存 X/Y GB」的分母；None 表示这台机器给不出可信总量，
         # 界面就只显示占用值
         self._vram_total_mb = None
 
     # ---------------------------------------------------------- 进度分段 ----
     def _set_span(self, lo, hi):
-        self._p_lo, self._p_hi = float(lo), float(hi)
+        self.progress.set_span(lo, hi)
+
+    def _set_train_span(self, a, b):
+        self.progress.set_train_span(a, b)
 
     def map_progress(self, frac):
-        """把阶段内的 0~1 映射到整条进度的当前区间。"""
-        f = max(0.0, min(1.0, float(frac)))
-        return self._p_lo + (self._p_hi - self._p_lo) * f
+        return self.progress.map_progress(frac)
 
     def _progress(self, frac, detail):
-        self.set_progress(self.map_progress(frac), detail)
+        self.progress.progress(frac, detail)
+
+    # ---------------------------------------------------------- 阶段时间线 ----
+    def _stage_plan(self, stages):
+        self.progress.stage_plan(stages)
+
+    def _stage(self, n):
+        self.progress.stage(n)
+
+    def _record_train_stats(self, line):
+        self.progress.record_train_stats(line)
+
+    def _train_summary(self):
+        return self.progress.train_summary()
+
+    def _stage_from_output(self, line):
+        self.progress.stage_from_output(line)
 
     def _done_message(self):
         """跑完时给用户的那句话：示例首跑要说得像个里程碑。"""
@@ -605,24 +295,137 @@ class PipelineCore:
             return True
 
     # ----------------------------------------------------------- start/stop ----
-    def start(self, do_colmap, do_train):
-        """UI 线程调用：询问恢复点/耗时后，起工作线程跑管线。"""
+    def start(self, do_colmap, do_train, force_colmap=False):
+        """UI 线程调用：询问复用/重复训练/恢复点/耗时后，起工作线程跑管线。
+
+        force_colmap=True 表示用户明确要求重算（「只用 COLMAP」入口），
+        此时连问都不问，直接从头跑。
+        """
         self.ask_resume()
-        if not self.ask_continue(do_colmap):
+        self.progress.reset_run()
+        # 有未完成的恢复点 = 在续训，不该再提示「这套设置已经训练过」
+        if do_train and not self._has_checkpoint():
+            if self._ask_retrain_existing() != "retrain":
+                return
+        reuse = False
+        if do_colmap and do_train and not force_colmap:
+            reuse = self._ask_reuse_colmap()
+        run_colmap = do_colmap and not reuse
+        if not self.ask_continue(run_colmap):
             return
         self._ips_recorded = False
         self.stop_flag = False
+        self.progress.reuse = reuse
+        if reuse:
+            self._log("[INFO] 复用上次的空间定位结果，跳过 COLMAP（照片与参数未变）。")
         # COLMAP 也能逐张报进度了，所以全程用同一根确定进度条：
         # 两个都做时 COLMAP 占前 30%，训练占后 70%；只做其一就占满。
-        self._colmap_span = (0.0, 0.30) if (do_colmap and do_train) else (0.0, 1.0)
-        self._train_span = (0.30, 1.0) if (do_colmap and do_train) else (0.0, 1.0)
-        self._set_span(*(self._colmap_span if do_colmap else self._train_span))
+        # 复用空间定位时进度条只有训练部分，也占满。
+        self.progress.configure(run_colmap, do_train)
+        # 时间线只显示本次真的会走的段：复用/只做空间定位/关掉评估时，
+        # 把用不上的段藏起来，免得用户盯着一个永远不会亮的节点。
+        plan = ([1, 2, 3] if run_colmap else [])
+        if do_train:
+            plan += [4, 5]
+            try:
+                if self.run_eval_var.get():
+                    plan.append(6)
+            except Exception:
+                plan.append(6)
+            plan.append(7)
+        self._stage_plan(plan)
         self.set_running(True, False)
-        self._progress(0, "正在准备..." if do_colmap else "正在准备训练...")
+        self._progress(0, "正在准备..." if run_colmap else "正在准备训练...")
         threading.Thread(
             target=self.pipeline_thread,
-            kwargs={"do_colmap": do_colmap, "do_train": do_train},
+            kwargs={"do_colmap": do_colmap, "do_train": do_train,
+                    "reuse_colmap": reuse},
             daemon=True).start()
+
+    def _default_workspace(self, img_dir, n_imgs):
+        """没填工作区时的默认目录（工作线程与复用检查必须用同一规则）。"""
+        name = os.path.basename(img_dir.rstrip("/\\")) or "project"
+        return os.path.join(PROJECT_ROOT, "workspaces", f"{name}_{n_imgs}imgs_gs")
+
+    def _run_paths(self):
+        """本次运行的照片目录/张数/工作区；照片没选好时返回 (None, 0, None)。"""
+        img_dir = resolve_path(self.img_var.get().strip())
+        n_imgs = self._count_images(img_dir)
+        if not n_imgs:
+            return None, 0, None
+        ws_dir = resolve_path(self.ws_var.get().strip()) \
+            or self._default_workspace(img_dir, n_imgs)
+        return img_dir, n_imgs, ws_dir
+
+    def _has_checkpoint(self):
+        """工作区里是否有未完成的训练恢复点（下次会续训，而不是从头训）。"""
+        _img, _n, ws_dir = self._run_paths()
+        if not ws_dir:
+            return False
+        return (os.path.isfile(os.path.join(ws_dir, "checkpoint.ply"))
+                and os.path.isfile(os.path.join(ws_dir, "checkpoint.ply.step")))
+
+    def _train_settings(self):
+        """当前训练设置的快照：写进 train_config.json，也用于识别「已经这样训过」。"""
+        mask = self.mask_var.get().strip()
+        if mask:
+            mask = relativize_path(resolve_path(mask))
+        return {
+            "quality": str(self.quality_var.get()),
+            "steps": int(self.vs_steps_var.get()),
+            "res_choice": str(self.res_var.get()),
+            "mcmc": bool(self.vs_mcmc_var.get()),
+            "run_eval": bool(self.run_eval_var.get()),
+            "exposure_fix": bool(self.exposure_fix_var.get()),
+            "mask_dir": mask,
+            "max_image_size": int(self.max_img_var.get()),
+        }
+
+    def _ask_retrain_existing(self):
+        """这组照片 + 这套设置已经成功训过时问一句。
+
+        返回 "retrain"（继续跑）、"view"/"cancel"（宿主已处理，调用方直接返回）。
+        没记录、模型被删、宿主不支持，都按 "retrain" 处理。
+        """
+        img_dir, _n, ws_dir = self._run_paths()
+        if not img_dir or not ws_dir:
+            return "retrain"
+        matched, cfg = train_config_matches(ws_dir, img_dir, self._train_settings())
+        if not matched:
+            return "retrain"
+        ask = getattr(self, "ask_retrain_existing", None)
+        if not callable(ask):
+            return "retrain"
+        try:
+            decision = str(ask(ws_dir, cfg)).strip().lower()
+        except Exception as e:
+            self._log(f"[WARN] 重复训练提示失败（按重新训练处理）: {e}")
+            return "retrain"
+        return decision if decision in ("retrain", "view", "cancel") else "retrain"
+
+    def _ask_reuse_colmap(self):
+        """有完整且与当前照片/参数一致的空间定位结果时，问一句要不要复用。
+
+        不能复用、宿主没实现询问，都按「重新计算」处理——宁可多等几分钟，
+        也不拿旧位姿去训一批新照片。
+        """
+        img_dir, n_imgs, ws_dir = self._run_paths()
+        if not img_dir or not ws_dir:
+            return False
+        ok, reason = colmap_meta_matches(ws_dir, img_dir, self.max_img_var.get())
+        if not ok:
+            # 有旧记录却不能复用：把原因写进日志，免得用户以为「怎么又重算了」
+            if os.path.isfile(os.path.join(ws_dir, COLMAP_META_FILE)):
+                self._log(f"[INFO] 重新计算空间定位：{reason}")
+            return False
+        ask = getattr(self, "ask_reuse_colmap", None)
+        if not callable(ask):
+            return False
+        try:
+            return bool(ask(n_imgs, ws_dir))
+        except Exception as e:
+            self._log(f"[WARN] 复用询问失败（按重新计算处理）: {e}")
+            return False
 
     def stop_pipeline(self):
         self.stop_flag = True
@@ -759,6 +562,8 @@ class PipelineCore:
                 self._log(line)
                 if colmap_total:
                     self._colmap_line_progress(line, colmap_total)
+                self._stage_from_output(line)
+                self._record_train_stats(line)
         self.current_proc.wait()
         rc = self.current_proc.returncode
         self.current_proc = None
@@ -772,31 +577,10 @@ class PipelineCore:
         return True
 
     def _colmap_line_progress(self, line, total):
-        """用 mapper 的 "Registering image #N (num_reg_frames=M)" 驱动重建进度。
+        self.progress.colmap_line_progress(line, total)
 
-        分子用括号里的「已定位张数」M，不是 #N：N 是数据库里的图像 id，刚定位
-        第 3 张时就可能是 97 号图，拿它当进度会一路虚报并给出荒唐的剩余时间。
-        不用 syscheck 的静态预估：那个数只到"整段 COLMAP"的粒度，而用户盯的是
-        这根条现在动不动。头几张定位的间隔不稳，攒够 5 张再给剩余时间。
-        """
-        m = _COLMAP_REGISTER_RE.search(line)
-        if not m:
-            return
-        n = int(m.group(2) or m.group(1))
-        # 场景不连通时 COLMAP 会另起一个子模型、计数从头开始，进度只许前进
-        n = max(n, getattr(self, "_colmap_last_n", 0))
-        self._colmap_last_n = n
-        now = time.time()
-        t0 = getattr(self, "_colmap_t0", None)
-        if t0 is None:
-            self._colmap_t0 = now
-        detail = f"正在定位照片 {min(n, total)}/{total}"
-        if n >= 5 and t0 is not None:
-            used = max(now - t0, 1.0)
-            left = used * max(total - n, 0) / float(n)
-            detail += (f" · 已用 {used/60:.1f} 分钟"
-                       f" · 预计还需 {left/60:.1f} 分钟")
-        self._progress(n / float(total), detail)
+    def _step_progress(self, n, total, verb):
+        self.progress.step_progress(n, total, verb)
 
     def _explain_failure(self, rc, output, colmap=False):
         """把退出码翻译成人话：日志一份，主面板一份。
@@ -1169,6 +953,12 @@ class PipelineCore:
                 with open(os.path.join(tmp_dir, name), "wb") as f:
                     f.write(enc.tobytes())
                 done += 1
+                # 副本生成通常几秒到几十秒；逐张报进度，条才不是假的。
+                # 宿主没实现 set_progress（纯逻辑测试）就跳过。
+                if factor > 1 and hasattr(self, "set_progress") \
+                        and done % max(1, len(names) // 100) == 0:
+                    self._progress(done / float(len(names)),
+                                   f"第 4/7 步 · 正在准备训练图像 {done}/{len(names)}")
             except Exception as e:
                 self._log(f"[WARN] {os.path.basename(dst_dir)} 生成失败 {name}: {e}")
 
@@ -1388,36 +1178,42 @@ if __name__ == "__main__":
         max_img = self.max_img_var.get()
 
         # COLMAP 三段在本阶段里的大致占比：提取 35% / 匹配 15% / 重建 50%
-        cm_lo, cm_hi = self._p_lo, self._p_hi
+        cm_lo, cm_hi = self.progress.p_lo, self.progress.p_hi
         cm_span = cm_hi - cm_lo
 
         def sub(a, b):
             self._set_span(cm_lo + cm_span * a, cm_lo + cm_span * b)
 
+        # 张数在特征提取前就要用：日志里能显示「共 N 张」，逐张进度也靠它
+        n_imgs = self._count_images(img_dir)
+
+        self._stage(1)
         sub(0.0, 0.35)
-        self._progress(0, "第 1/3 步 · 正在提取照片特征...")
-        self._log("===== 步骤 1/3: COLMAP 特征提取 =====")
+        self.progress.reset_colmap_timing()
+        self._progress(0, f"第 1/7 步 · 正在提取照片特征（共 {n_imgs} 张）...")
+        self._log("===== 步骤 1/7: COLMAP 特征提取 =====")
         if not self.run_cmd([
             colmap_exe, "feature_extractor",
             "--database_path", db_path,
             "--image_path", img_dir,
             "--FeatureExtraction.max_image_size", str(max_img),
-        ], env=colmap_env, colmap=True):
+        ], env=colmap_env, colmap=True, colmap_total=n_imgs):
             return None, None, None
 
         if self.stop_flag:
             return None, None, None
 
-        n_imgs = self._count_images(img_dir)
         matcher = pick_colmap_matcher(n_imgs)
         if matcher == "sequential":
             self._log(f"[INFO] 共 {n_imgs} 张照片（>{SEQUENTIAL_MATCHER_THRESHOLD}），"
                       f"自动切换 sequential 匹配（要求文件名按拍摄顺序命名，手机默认如此；"
                       f"若重建效果差，可按名称排序后重试）。")
 
+        self._stage(2)
         sub(0.35, 0.50)
-        self._progress(0, "第 2/3 步 · 正在比对照片之间的重叠...")
-        self._log("===== 步骤 2/3: COLMAP 特征匹配 =====")
+        self._progress(0.0, f"第 2/7 步 · 正在比对 {n_imgs} 张照片之间的重叠"
+                            f"（COLMAP 这一步不报逐张进度，通常 1~2 分钟）...")
+        self._log("===== 步骤 2/7: COLMAP 特征匹配 =====")
         if not self.run_cmd([
             colmap_exe, f"{matcher}_matcher",
             "--database_path", db_path,
@@ -1427,11 +1223,11 @@ if __name__ == "__main__":
         if self.stop_flag:
             return None, None, None
 
+        self._stage(3)
         sub(0.50, 1.00)
-        self._colmap_t0 = None
-        self._colmap_last_n = 0
-        self._progress(0, "第 3/3 步 · 正在计算相机位置并生成稀疏点云...")
-        self._log("===== 步骤 3/3: COLMAP 稀疏重建 =====")
+        self.progress.reset_colmap_timing()
+        self._progress(0.0, f"第 3/7 步 · 正在计算相机位置（0/{n_imgs}）...")
+        self._log("===== 步骤 3/7: COLMAP 稀疏重建 =====")
         if not self.run_cmd([
             colmap_exe, "mapper",
             "--database_path", db_path,
@@ -1443,6 +1239,8 @@ if __name__ == "__main__":
 
         sparse_zero = self._ensure_sparse_zero(sparse_dir)
         self._check_registration(colmap_exe, colmap_env, sparse_zero, n_imgs, img_dir)
+        # 记下这批照片与参数：下次照片没变时可以直接复用，不必再跑一遍 COLMAP
+        write_colmap_meta(ws_dir, img_dir, max_img)
         return colmap_exe, colmap_env, sparse_zero
 
     def _check_registration(self, colmap_exe, colmap_env, sparse_zero, n_imgs, img_dir=None):
@@ -1502,6 +1300,9 @@ if __name__ == "__main__":
         if os.path.isfile(os.path.join(ws_dir, "checkpoint.ply")):
             self._log("[INFO] 检测到训练恢复点，将从中断处继续训练。")
 
+        self._stage(4)
+        self._set_train_span(0.0, 0.04)     # 准备阶段只占训练大段的一小截
+        self._progress(0, "第 4/7 步 · 正在检查显卡并准备训练环境...")
         device_id, is_integrated, gpu_name = self._detect_gpu(vksp_py)
         quality = self.quality_var.get()
         cap_map = {"快速": 200000, "标准": 400000, "高质量": 800000}
@@ -1535,6 +1336,13 @@ if __name__ == "__main__":
                     else:
                         self._log(f"[INFO] 显存 {vram_total_mb // 1024} GB：使用原分辨率训练。")
         base_cap = cap_map.get(quality, 400000)
+
+        # 第 4 段：生成降采样/纠偏副本。它比训练快得多，但用户能看到
+        # 「正在准备 128 张里的第 N 张」，不必对着不动的条猜。
+        n_imgs = self._count_images(img_dir)
+        res_label = {"images_4": "1/4 分辨率", "images_2": "1/2 分辨率",
+                     "images": "原分辨率"}.get(res_dir, res_dir)
+        self._progress(0, f"第 4/7 步 · 正在准备训练图像（{res_label}，共 {n_imgs} 张）...")
 
         # EXIF 方向检查：COLMAP 会应用 EXIF 旋转，而 cv2 / stb_image 不会。
         rotated = set()
@@ -1633,6 +1441,19 @@ if __name__ == "__main__":
 
         self._log(f"[INFO] 生成的训练脚本: {tmp_path}")
         cwd = ws_dir
+        # 记下这次「怎么跑的」，训练完成后和实测结果一起展示，也用于识别重复训练
+        self.progress.set_train_params({
+            "quality": quality,
+            "steps": steps,
+            "res_label": res_label,
+            "n_imgs": n_imgs,
+            "mcmc": use_mcmc,
+            "run_eval": run_eval,
+            "exposure_fix": exp_fix,
+        })
+        self._stage(5)
+        self._set_train_span(0.04, 0.92)
+        self._progress(0, f"第 5/7 步 · 正在训练 3D 模型（{steps} 步，这是最花时间的一段）...")
         # 崩溃自动续训：训练进程异常退出且存在恢复点时自动重跑
         ok = False
         retries = 0
@@ -1678,6 +1499,9 @@ if __name__ == "__main__":
                     if newest is None or os.path.getmtime(full) > os.path.getmtime(newest):
                         newest = full
 
+        self._stage(7)
+        self._set_train_span(0.99, 1.0)
+        self._progress(0.0, "第 7/7 步 · 正在整理输出并导出分享版 .splat...")
         if newest:
             target = os.path.join(output_dir, target_name)
             if os.path.exists(target):
@@ -1705,6 +1529,7 @@ if __name__ == "__main__":
                 shutil.copy2(ply_path, output_ply)
                 self._log(f"[OK] 已将 PLY 复制到: {output_ply}")
                 self._export_splat(output_ply)
+                self._record_training_result(ws_dir, img_dir, target, output_ply)
                 self._report_eval(os.path.join(target, "eval.json"))
                 return True
 
@@ -1723,6 +1548,8 @@ if __name__ == "__main__":
                 shutil.copy2(newest_ply, output_ply)
                 self._log(f"[OK] 已将最新 PLY 复制到: {output_ply}")
                 self._export_splat(output_ply)
+                self._record_training_result(ws_dir, img_dir,
+                                             os.path.dirname(newest_ply), output_ply)
                 self._report_eval(os.path.join(os.path.dirname(newest_ply), "eval.json"))
         return True
 
@@ -1815,26 +1642,39 @@ if __name__ == "__main__":
             self._log(f"[WARN] .splat 导出失败（不影响 PLY）: {e}")
             return None
 
-    def _report_eval(self, eval_json_path):
-        """训练收取完成后汇报质量指标：写日志 + 弹窗（宿主负责跨线程封送）。"""
-        mean = load_eval_mean(eval_json_path)
-        if mean is None:
-            return  # 评测被关闭或未完成，不打扰
-        verdict, level, rows = judge_eval_metrics(mean)
-        summary = "  ".join(f"{n}={v}" for n, v, _ in rows)
-        prefix = {"good": "[OK]", "mid": "[INFO]", "bad": "[WARN]"}.get(level, "[INFO]")
-        self._log(f"{prefix} 质量评估：{verdict}（{summary}）")
+    def _record_training_result(self, ws_dir, img_dir, model_dir, output_ply):
+        """记录「这组照片 + 这套设置」已经产出模型，供下次开始时提醒。"""
         try:
-            self.show_eval(mean)
+            write_train_config(ws_dir, img_dir, self._train_settings(), output_ply,
+                               model_dir=model_dir,
+                               actual=dict(self.progress.train_stats))
+        except Exception as e:
+            self._log(f"[WARN] 训练配置记录失败（不影响模型）: {e}")
+
+    def _report_eval(self, eval_json_path):
+        """训练收取完成后汇报参数与质量指标：写日志 + 弹窗（宿主负责跨线程封送）。
+
+        评测关掉时也要弹：步数、分辨率、耗时、高斯数这些同样是用户想看的。
+        """
+        mean = load_eval_mean(eval_json_path)
+        if mean is not None:
+            verdict, level, rows = judge_eval_metrics(mean)
+            summary = "  ".join(f"{n}={v}" for n, v, _ in rows)
+            prefix = {"good": "[OK]", "mid": "[INFO]", "bad": "[WARN]"}.get(level, "[INFO]")
+            self._log(f"{prefix} 质量评估：{verdict}（{summary}）")
+        else:
+            self._log("[INFO] 训练完成（未开启质量评估或评估未完成，没有 PSNR/SSIM）。")
+        try:
+            self.show_eval(mean, self._train_summary())
         except Exception:
             pass
 
     def _run_train(self, ws_dir, img_dir, sparse_zero, output_ply):
-        self._log("===== 步骤 4/5: VkSplat 训练 (Vulkan) =====")
+        self._log("===== 步骤 5/7: VkSplat 训练 (Vulkan) =====")
         return self.run_vksplat_train(ws_dir, img_dir, sparse_zero, output_ply)
 
     def _run_viewer(self, output_ply):
-        self._log("===== 步骤 5/5: 启动 VKGS 查看器 =====")
+        self._log("===== 步骤 7/7: 启动 VKGS 查看器 =====")
         vkgs = resolve_path(self.vkgs_var.get().strip())
         if vkgs and os.path.exists(vkgs):
             try:
@@ -1846,7 +1686,7 @@ if __name__ == "__main__":
             self._log(f"[WARN] VKGS 查看器未配置。输出 PLY: {output_ply}")
 
     # ------------------------------------------------------------- thread ----
-    def pipeline_thread(self, do_colmap=True, do_train=True):
+    def pipeline_thread(self, do_colmap=True, do_train=True, reuse_colmap=False):
         self._last_failure_hint = None   # 新的运行：允许重新给出失败原因
         try:
             img_dir = resolve_path(self.img_var.get().strip())
@@ -1864,21 +1704,32 @@ if __name__ == "__main__":
                 return
 
             if not ws_dir:
-                name = os.path.basename(img_dir.rstrip("/\\")) or "project"
-                ws_dir = os.path.join(PROJECT_ROOT, "workspaces", f"{name}_{n_imgs}imgs_gs")
+                ws_dir = self._default_workspace(img_dir, n_imgs)
                 self.set_workspace(relativize_path(ws_dir))
 
             os.makedirs(ws_dir, exist_ok=True)
             output_ply = self._make_output_ply_name(ws_dir)
 
             if do_colmap:
-                self.set_step(1)
-                self._set_span(*self._colmap_span)
-                self.set_status("正在识别照片中的特征点并计算相机位置...（这一步最耗时）")
-                _, _, sparse_zero = self._run_colmap(img_dir, ws_dir)
-                if sparse_zero is None:
-                    self.set_status("空间定位失败，请看日志里的「原因 / 建议」，或点「导出诊断」。")
-                    return
+                if reuse_colmap:
+                    # start() 已确认过；这里再验一次，防止询问期间工作区被改动
+                    ok, reason = colmap_meta_matches(ws_dir, img_dir, self.max_img_var.get())
+                    if ok:
+                        sparse_zero = os.path.join(ws_dir, "sparse", "0")
+                        self._log(f"[OK] 复用上次的空间定位结果（{n_imgs} 张），跳过 COLMAP。")
+                        self.set_status("已复用上次的空间定位结果，直接开始训练。")
+                        self._progress(0.0, "复用上次的空间定位结果，直接开始准备训练...")
+                    else:
+                        reuse_colmap = False
+                        self._log(f"[WARN] 复用条件已变化（{reason}），改为重新计算空间定位。")
+                if not reuse_colmap:
+                    self.set_step(1)
+                    self.progress.set_span(*self.progress.colmap_span)
+                    self.set_status("正在识别照片中的特征点并计算相机位置...（这一步最耗时）")
+                    _, _, sparse_zero = self._run_colmap(img_dir, ws_dir)
+                    if sparse_zero is None:
+                        self.set_status("空间定位失败，请看日志里的「原因 / 建议」，或点「导出诊断」。")
+                        return
             else:
                 sparse_zero = os.path.join(ws_dir, "sparse", "0")
                 if not os.path.isdir(sparse_zero):
@@ -1896,7 +1747,7 @@ if __name__ == "__main__":
 
             if do_train:
                 self.set_step(2)
-                self._set_span(*self._train_span)
+                self.progress.set_span(*self.progress.train_span)
                 self.set_status("正在训练 3D 模型...（请耐心等待）")
                 if not self._run_train(ws_dir, img_dir, sparse_zero, output_ply):
                     if self.stop_flag:
@@ -1912,6 +1763,7 @@ if __name__ == "__main__":
                 self.set_status("训练完成，正在打开 3D 查看器...")
                 self._run_viewer(output_ply)
                 self._log(f"[OK] 全部完成! 输出: {output_ply}")
+                self._progress(1.0, "全部完成")
                 self.set_status(self._done_message())
             else:
                 self.set_step(1)

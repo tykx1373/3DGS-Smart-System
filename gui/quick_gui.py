@@ -4,7 +4,7 @@
 管线逻辑在 pipeline_core.PipelineCore，界面外观在 qt_theme（QSS）。
 
 运行：python quick_gui.py
-页面：训练 / 历史模型 / 设置 / 日志
+页面：照片 / 训练设置 / 运行 / 历史模型 / 设置 / 日志
 """
 import os
 import sys
@@ -14,14 +14,12 @@ import threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QUrl
-from PySide6.QtGui import QFont, QDesktopServices, QIcon
+from PySide6.QtCore import Qt, QObject, Signal, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QButtonGroup,
-    QFileDialog, QDialog, QAbstractItemView, QListWidget, QStackedWidget,
-    QLabel, QPushButton, QLineEdit, QCheckBox, QRadioButton, QComboBox,
-    QSpinBox, QProgressBar, QTableWidget, QTableWidgetItem, QTextEdit,
-    QMessageBox,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QFileDialog, QListWidget, QStackedWidget, QLabel, QPushButton,
+    QLineEdit, QCheckBox, QRadioButton, QComboBox, QSpinBox, QMessageBox,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,19 +28,26 @@ if SCRIPT_DIR not in sys.path:
 
 from pipeline_core import (  # noqa: E402
     PROJECT_ROOT, DEFAULT_COLMAP, DEFAULT_VKGS, DEFAULT_VKSPLAT_PY,
-    QUALITY_PRESETS, RES_AUTO, RES_DIR_MAP,
+    QUALITY_PRESETS, RES_AUTO,
     _cfg_int, _cfg_choice, load_config, save_config,
-    resolve_path, relativize_path,
-    scan_history_models, delete_history_model, judge_eval_metrics,
-    capture_report_text, CAPTURE_ASK_TIMEOUT,
-    blur_scores, pick_blurry, photo_precheck_text, IMAGE_EXTS,
-    PipelineCore,
+    resolve_path, relativize_path, PipelineCore,
 )
+from dataset_tools import (  # noqa: E402
+    IMAGE_EXTS, CAPTURE_ASK_TIMEOUT,
+    blur_scores, pick_blurry, photo_precheck_text, capture_report_text,
+)
+from dialogs import EvalDialog, SyscheckDialog  # noqa: E402
+from pages.photo import PhotoPage  # noqa: E402
+from pages.train_settings import TrainSettingsPage  # noqa: E402
+from pages.run import RunPage  # noqa: E402
+from pages.history import HistoryPage  # noqa: E402
+from pages.settings import SettingsPage  # noqa: E402
+from pages.log import LogPage  # noqa: E402
 import syscheck  # noqa: E402
 import qt_theme  # noqa: E402
 from app_version import APP_VERSION  # noqa: E402
 from qt_theme import (  # noqa: E402
-    apply_theme, make_label, Card, PrimaryButton, Toast, confirm,
+    apply_theme, make_label, Toast, confirm,
 )
 
 
@@ -57,6 +62,29 @@ SAMPLE_MIN_IMAGES = 20
 # 任务栏/窗口图标候选路径（装机版把 app.ico 放到 gui/ 下，开发树在 installer/ 下）
 ICON_CANDIDATES = (os.path.join("gui", "app.ico"),
                    os.path.join("installer", "app.ico"), "app.ico")
+
+# faulthandler 的输出文件要一直开着，否则崩溃时文件已被回收
+_CRASH_LOG = None
+
+
+def _enable_crash_log():
+    """把原生崩溃（0xc0000005 这类）的现场写进 logs/crash.log。
+
+    Python 层的异常有 traceback，但访问冲突会直接把进程带走，控制台什么都不留。
+    faulthandler 至少能把崩溃时各线程的 Python 栈落盘，下次看日志就知道卡在哪。
+    """
+    global _CRASH_LOG
+    if _CRASH_LOG is not None:
+        return
+    try:
+        import faulthandler
+        logs_dir = os.path.join(PROJECT_ROOT, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        _CRASH_LOG = open(os.path.join(logs_dir, "crash.log"), "a",
+                          encoding="utf-8", buffering=1)
+        faulthandler.enable(file=_CRASH_LOG)
+    except Exception:
+        _CRASH_LOG = None
 
 
 # --------------------------------------------------------------- Var 适配 ----
@@ -77,754 +105,18 @@ class _Signals(QObject):
     """工作线程 → UI 线程的信号（Qt 自动使用队列连接封送）。"""
     status = Signal(str)
     step = Signal(int)
+    stage = Signal(int)                  # 阶段序号（7 段管线）
+    stage_plan = Signal(object)          # 本次实际要跑的阶段列表
     workspace = Signal(str)
     progress = Signal(float, str)        # frac(-1 表示只更新文字), detail
     running = Signal(bool, bool)         # 是否运行中, 不确定进度条
-    eval_ready = Signal(object)
+    eval_ready = Signal(object, object)  # 质量指标（可能为 None）, 训练参数/实测值
     failure = Signal(str, str)          # 原因, 建议
     capture = Signal(object)            # 采集质量报告（工作线程发，等 UI 回答）
     precheck = Signal(str, str, int)    # 结论, 级别, 序号（旧的序号直接丢弃）
     log = Signal(str, str)               # 文本, 级别(info/warn/fail/ok)
     diag_done = Signal(str, object)      # 目标路径, 异常或 None
     share_done = Signal(str, str)        # .splat 路径, 错误信息（空串表示成功）
-
-
-def _row(label, *widgets, tip=None, label_width=110):
-    w = QWidget()
-    lay = QHBoxLayout(w)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lab = QLabel(label)
-    lab.setFixedWidth(label_width)
-    lay.addWidget(lab)
-    for x in widgets:
-        lay.addWidget(x)
-    lay.addStretch(1)
-    if tip:
-        for t in (lab,) + widgets:
-            t.setToolTip(tip)
-    return w
-
-
-def _path_row(parent, lay, label, var, file=True, tip=None, label_width=110):
-    """一行「标签 + 路径输入框 + 浏览按钮」。设置页与训练设置页共用。"""
-    w = QWidget()
-    h = QHBoxLayout(w)
-    h.setContentsMargins(0, 0, 0, 0)
-    lab = QLabel(label)
-    lab.setFixedWidth(label_width)
-    h.addWidget(lab)
-    edit = QLineEdit()
-    edit.setText(var.get())
-    if tip:
-        edit.setToolTip(tip)
-        lab.setToolTip(tip)
-    btn = QPushButton("浏览")
-
-    def pick():
-        if file:
-            p, _ = QFileDialog.getOpenFileName(parent, label)
-        else:
-            p = QFileDialog.getExistingDirectory(parent, label)
-        if p:
-            edit.setText(relativize_path(p))
-
-    btn.clicked.connect(pick)
-    h.addWidget(edit, 1)
-    h.addWidget(btn)
-    lay.addWidget(w)
-    return edit
-
-
-# ================================================================ 照片页 ====
-class PhotoPage(QWidget):
-    """只管一件事：把照片选对。选完就地预检，不合格当场说。"""
-
-    def __init__(self, win):
-        super().__init__()
-        self.setObjectName("photoPage")
-        self.win = win
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 20, 28, 20)
-        root.setSpacing(12)
-
-        root.addWidget(make_label("1 · 选择照片", "title"))
-        root.addWidget(make_label("把你拍的一组照片变成可旋转、可缩放的 3D 模型。", "caption"))
-
-        card = Card("照片文件夹")
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.addWidget(QLabel("照片文件夹："))
-        win.img_edit = QLineEdit()
-        win.img_edit.setPlaceholderText("点击右侧选择存放照片的文件夹")
-        win.img_edit.setToolTip("支持 jpg/jpeg/png/bmp/tif/tiff；建议 30~200 张，每张重叠 60% 以上。")
-        rl.addWidget(win.img_edit, 1)
-        b = QPushButton("浏览…")
-        b.clicked.connect(win.browse_img)
-        rl.addWidget(b)
-        card.body_layout.addWidget(row)
-        card.body_layout.addWidget(
-            make_label("拍照小技巧：绕物体一圈拍，每张重叠 60% 以上，建议 30~200 张。", "caption"))
-        # 手边没有适合的照片时，第一次不应该拿自己的照片去冒险失败。
-        win.sample_btn = QPushButton("手边没合适的照片？用内置示例照片试跑一次")
-        win.sample_btn.setToolTip(
-            "用随安装包附带的示例照片完整跑一遍：\n"
-            "先确认这台机器能出模型，再决定用自己的照片认真拍。")
-        win.sample_btn.clicked.connect(win.use_sample)
-        win.sample_btn.setVisible(win.sample_ready())
-        card.body_layout.addWidget(win.sample_btn)
-        # 选完照片就地给一句本地检查结论，不用等 COLMAP 跑完才回头说照片不行
-        win.photo_note = make_label("", "caption")
-        win.photo_note.setVisible(False)
-        card.body_layout.addWidget(win.photo_note)
-        root.addWidget(card)
-
-        brow = QWidget()
-        bl = QHBoxLayout(brow)
-        bl.setContentsMargins(0, 0, 0, 0)
-        nxt = PrimaryButton("下一步：训练设置 →")
-        nxt.setFixedHeight(40)
-        nxt.setMinimumWidth(180)
-        nxt.clicked.connect(lambda: win.nav.setCurrentRow(win.NAV.index("训练设置")))
-        bl.addWidget(nxt)
-        bl.addStretch(1)
-        root.addWidget(brow)
-        root.addStretch(1)
-
-
-# ============================================================ 训练设置页 ====
-class TrainSettingsPage(QWidget):
-    """只管一件事：这次训练怎么跑。训练参数全部集中在这一页。"""
-
-    def __init__(self, win):
-        super().__init__()
-        self.setObjectName("trainSettingsPage")
-        self.win = win
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 20, 28, 20)
-        root.setSpacing(12)
-
-        root.addWidget(make_label("2 · 训练设置", "title"))
-        root.addWidget(make_label("只改这一页就能决定模型质量与耗时；不确定时保持默认即可。",
-                                  "caption"))
-
-        card = Card("质量档位")
-        qrow = QWidget()
-        ql = QHBoxLayout(qrow)
-        ql.setContentsMargins(0, 0, 0, 0)
-        ql.addWidget(QLabel("质量档位："))
-        win.quality_group = QButtonGroup(self)
-        for name in ("快速", "标准", "高质量"):
-            rb = QRadioButton(name)
-            rb.setToolTip(QUALITY_PRESETS[name][1])
-            win.quality_group.addButton(rb)
-            ql.addWidget(rb)
-        ql.addStretch(1)
-        card.body_layout.addWidget(qrow)
-        win.quality_hint = make_label("", "caption")
-        card.body_layout.addWidget(win.quality_hint)
-
-        prow = QWidget()
-        pl = QHBoxLayout(prow)
-        pl.setContentsMargins(0, 0, 0, 0)
-        pl.addWidget(QLabel("训练步数："))
-        win.steps_spin = QSpinBox()
-        win.steps_spin.setRange(100, 10_000_000)
-        win.steps_spin.setToolTip("迭代次数，越多细节越好、越慢。档位切换会自动套用默认值。")
-        pl.addWidget(win.steps_spin)
-        pl.addSpacing(20)
-        win.mcmc_chk = QCheckBox("MCMC 优化")
-        win.mcmc_chk.setChecked(True)
-        win.mcmc_chk.setToolTip("勾选：自动增删高斯点，多数场景质量更好；"
-                                "照片很少/小场景训练失败时可取消。")
-        pl.addWidget(win.mcmc_chk)
-        pl.addStretch(1)
-        card.body_layout.addWidget(prow)
-        root.addWidget(card)
-
-        # 高级选项：与日常参数分开，免得新手在选项堆里迷路
-        card = Card("高级选项（一般不用动）")
-        optrow = QWidget()
-        ol = QHBoxLayout(optrow)
-        ol.setContentsMargins(0, 0, 0, 0)
-        win.eval_chk = QCheckBox("训练后质量评估（约 +1 分钟）")
-        win.eval_chk.setChecked(True)
-        win.eval_chk.setToolTip(
-            "勾选：训完留出 16 张照片考试并打分（PSNR / SSIM / LPIPS）。\n"
-            "实测 128 张、快速档下约 1 分 17 秒，比训练本身（约 40 秒）还久——\n"
-            "其中一半时间花在加载 LPIPS 模型上。\n"
-            "只想要模型、不在意分数就取消勾选，能明显更快看到结果；\n"
-            "模型本身与勾选与否无关。")
-        ol.addWidget(win.eval_chk)
-        win.lpips_chk = QCheckBox("允许联网下载 LPIPS 权重（约 760 MB）")
-        win.lpips_chk.setToolTip(
-            "不勾：本机没有权重时只算 PSNR/SSIM，评估会快很多，也不会卡住。\n"
-            "勾选：缺权重时联网下载（约 760 MB），之后每次评估都要加载这两个网络。")
-        ol.addWidget(win.lpips_chk)
-        ol.addStretch(1)
-        card.body_layout.addWidget(optrow)
-
-        optrow2 = QWidget()
-        ol2 = QHBoxLayout(optrow2)
-        ol2.setContentsMargins(0, 0, 0, 0)
-        win.exposure_chk = QCheckBox("曝光校正（照片明暗不一时）")
-        win.exposure_chk.setToolTip(
-            "勾选：把所有照片的曝光统一匹配到中间值，\n"
-            "减轻拍照时明暗不一致导致的重建色差/闪烁。\n"
-            "曝光本来就一致的照片无需勾选；只处理训练副本，不动原图。")
-        ol2.addWidget(win.exposure_chk)
-        ol2.addStretch(1)
-        card.body_layout.addWidget(optrow2)
-        root.addWidget(card)
-
-        card = Card("图像与显存")
-        win.cache_combo = QComboBox()
-        win.cache_combo.addItems(["cpu", "gpu"])
-        win.cache_combo.setCurrentText("cpu")
-        win.cache_combo.setToolTip("gpu 更快但占显存；核显或显存紧张选 cpu。")
-        win.res_combo = QComboBox()
-        win.res_combo.addItems([RES_AUTO] + list(RES_DIR_MAP))
-        win.res_combo.setToolTip("训练图像尺寸；跟随档位＝快速 1/4、标准 1/2、高质量原图，\n"
-                                 "并按显存自动降档（核显/不足 8GB 的独显最高 1/2，防显存溢出）。")
-        card.body_layout.addWidget(_row("图片缓存：", win.cache_combo, label_width=110))
-        card.body_layout.addWidget(_row("图像分辨率：", win.res_combo, label_width=110))
-        win.maximg_spin = QSpinBox()
-        win.maximg_spin.setRange(256, 20000)
-        win.maximg_spin.setValue(1600)
-        win.maximg_spin.setToolTip("COLMAP 特征提取时图片长边的上限（默认 1600）。")
-        card.body_layout.addWidget(_row("最大图片尺寸：", win.maximg_spin, label_width=110))
-        win.mask_edit = _path_row(
-            self, card.body_layout, "Mask 文件夹:", win.mask_var, file=False,
-            tip="遮罩图须与照片同名（IMG_001.jpg → IMG_001.jpg.png），"
-                "黑色区域训练时忽略；留空不使用。")
-        root.addWidget(card)
-
-        card = Card("输出位置")
-        win.ws_edit = _path_row(
-            self, card.body_layout, "工作区文件夹:", win.ws_var, file=False,
-            tip="留空时自动在 workspaces/ 下按照片文件夹名生成。")
-        root.addWidget(card)
-
-        brow = QWidget()
-        bl = QHBoxLayout(brow)
-        bl.setContentsMargins(0, 0, 0, 0)
-        win.run_btn = PrimaryButton("开始生成 3D 模型")
-        win.run_btn.setFixedHeight(40)
-        win.run_btn.setMinimumWidth(180)
-        win.run_btn.clicked.connect(win.start_pipeline)
-        bl.addWidget(win.run_btn)
-        bl.addStretch(1)
-        root.addWidget(brow)
-        root.addStretch(1)
-
-
-# ================================================================== 运行页 ====
-class RunPage(QWidget):
-    """只管一件事：跑起来之后的进度、结果与排错。"""
-
-    def __init__(self, win):
-        super().__init__()
-        self.setObjectName("runPage")
-        self.win = win
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 20, 28, 20)
-        root.setSpacing(12)
-
-        root.addWidget(make_label("3 · 生成与查看", "title"))
-        root.addWidget(make_label("点「开始生成」后这一页会显示进度；出错时原因与办法也在这里。",
-                                  "caption"))
-
-        # 步骤指示
-        steps = QWidget()
-        sl = QHBoxLayout(steps)
-        sl.setContentsMargins(2, 6, 0, 2)
-        self.step_labels = []
-        for num, title, sub in (("1", "选择照片", "在「照片」页完成"),
-                                ("2", "生成 3D 模型", "电脑自动计算（几分钟~几十分钟）"),
-                                ("3", "查看结果", "自动打开 3D 查看器")):
-            c = QWidget()
-            cl = QHBoxLayout(c)
-            cl.setContentsMargins(0, 0, 0, 0)
-            cl.setSpacing(9)
-            n = QLabel(num)
-            n.setFixedSize(30, 30)
-            n.setAlignment(Qt.AlignCenter)
-            t = QWidget()
-            tl = QVBoxLayout(t)
-            tl.setContentsMargins(0, 0, 0, 0)
-            tl.setSpacing(1)
-            t1, t2 = QLabel(title), make_label(sub, "caption")
-            tl.addWidget(t1)
-            tl.addWidget(t2)
-            cl.addWidget(n)
-            cl.addWidget(t)
-            sl.addWidget(c)
-            self.step_labels.append((n, t1, t2))
-        sl.addStretch(1)
-        root.addWidget(steps)
-        self.set_step_color(0)
-
-        # 操作按钮
-        brow = QWidget()
-        bl = QHBoxLayout(brow)
-        bl.setContentsMargins(0, 0, 0, 0)
-        win.rerun_btn = QPushButton("重新生成")
-        win.rerun_btn.setFixedHeight(40)
-        win.rerun_btn.setToolTip("用当前设置从头再跑一遍（已有恢复点时会询问是否继续）。")
-        win.rerun_btn.clicked.connect(win.start_pipeline)
-        bl.addWidget(win.rerun_btn)
-        win.stop_btn = QPushButton("停止")
-        win.stop_btn.setFixedHeight(40)
-        win.stop_btn.setEnabled(False)
-        win.stop_btn.clicked.connect(win.stop_pipeline)
-        bl.addWidget(win.stop_btn)
-        win.view_btn = QPushButton("查看 3D 模型")
-        win.view_btn.setFixedHeight(40)
-        win.view_btn.clicked.connect(win.open_viewer)
-        bl.addWidget(win.view_btn)
-        win.check_btn = QPushButton("环境自检")
-        win.check_btn.setFixedHeight(40)
-        win.check_btn.clicked.connect(win.open_syscheck)
-        bl.addWidget(win.check_btn)
-        bl.addStretch(1)
-        root.addWidget(brow)
-
-        # 进度
-        win.ind_bar = QProgressBar()
-        win.ind_bar.setRange(0, 0)  # 忙碌动画
-        win.ind_bar.setVisible(False)
-        root.addWidget(win.ind_bar)
-        win.det_bar = QProgressBar()
-        win.det_bar.setRange(0, 100)
-        win.det_bar.setVisible(False)
-        root.addWidget(win.det_bar)
-        win.status_lab = make_label("就绪。请先选择照片文件夹。", "caption")
-        root.addWidget(win.status_lab)
-
-        # 出错时把「原因 / 怎么办」直接放到主面板：日志默认折叠，
-        # 而新手出错时的第一反应从来不是翻日志。
-        self.fail_card = Card("这一步没成功")
-        self.fail_cause = QLabel("")
-        self.fail_cause.setWordWrap(True)
-        self.fail_cause.setStyleSheet(f"color:{qt_theme.RED}; font-weight:600;"
-                                      "background:transparent;")
-        self.fail_advice = QLabel("")
-        self.fail_advice.setWordWrap(True)
-        frow = QHBoxLayout()
-        frow.setContentsMargins(0, 0, 0, 0)
-        win.diag_btn = QPushButton("导出诊断包")
-        win.diag_btn.setToolTip("把最近日志、环境自检和配置打成一个 zip，发给开发者即可。")
-        win.diag_btn.clicked.connect(win.export_diagnostics)
-        win.fail_log_btn = QPushButton("看日志")
-        win.fail_log_btn.clicked.connect(win.show_log_page)
-        frow.addWidget(win.diag_btn)
-        frow.addWidget(win.fail_log_btn)
-        frow.addStretch(1)
-        self.fail_card.body_layout.addWidget(self.fail_cause)
-        self.fail_card.body_layout.addWidget(self.fail_advice)
-        self.fail_card.body_layout.addLayout(frow)
-        self.fail_card.setVisible(False)
-        root.addWidget(self.fail_card)
-
-        # 卡片里的按钮是「出错后才出现」的求助入口，不能像参数控件那样在
-        # 运行中被禁用（否则自动续训时用户点不到）；_apply_running 按此跳过。
-        self._runtime_exempt_widgets = (win.diag_btn, win.fail_log_btn)
-        root.addStretch(1)
-
-    def set_failure(self, cause, advice):
-        """出错卡片：一句「为什么」+ 一句「现在怎么办」，摆在主面板上。"""
-        self.fail_cause.setText(cause)
-        self.fail_advice.setText("怎么办：" + advice)
-        self.fail_card.setVisible(True)
-        # 卡片在运行页；用户可能正停在别的页（比如去设置里改路径），
-        # 出错时直接跳过来，否则这句「为什么」等于没说。
-        self.win.nav.setCurrentRow(self.win.NAV.index("运行"))
-
-    def set_step_color(self, n):
-        """圆形步骤徽章：未开始灰边 / 当前蓝底白字 / 完成绿底白勾。"""
-        sub = qt_theme._PALETTES[qt_theme.current_scheme()]["subtext"]
-        styles = {
-            "pending": "border:2px solid #8a8a8a; border-radius:15px; color:#8a8a8a;",
-            "active": f"background:{qt_theme.ACCENT}; border-radius:15px; color:#ffffff; font-weight:700;",
-            "done": f"background:{qt_theme.GREEN_BRIGHT}; border-radius:15px; color:#ffffff;",
-        }
-        for i, (badge, t1, t2) in enumerate(self.step_labels):
-            state = "pending" if i + 1 > n else ("active" if i + 1 == n else "done")
-            badge.setStyleSheet(styles[state])
-            badge.setFont(QFont("Segoe UI Symbol", 11, QFont.Bold))
-            badge.setText("✓" if state == "done" else str(i + 1))
-            text_color = {"pending": "#8a8a8a", "active": qt_theme.ACCENT,
-                          "done": qt_theme.GREEN_BRIGHT}[state]
-            t1.setStyleSheet(f"color:{text_color}; font-weight:600; background:transparent;")
-            t2.setStyleSheet(f"color:{sub}; background:transparent;")
-
-
-# ============================================================== 历史模型页 ====
-class HistoryPage(QWidget):
-    COLS = ["时间", "模型", "档位", "步数", "PSNR", "SSIM", "LPIPS", "大小(MB)", "分享版(MB)"]
-
-    def __init__(self, win):
-        super().__init__()
-        self.setObjectName("historyPage")
-        self.win = win
-        self.items = []
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 20, 28, 20)
-        root.setSpacing(12)
-        head = QHBoxLayout()
-        head.addWidget(make_label("历史模型", "title"))
-        head.addStretch(1)
-        refresh, open_btn, share_btn, folder_btn, del_btn = (
-            QPushButton("刷新"), QPushButton("打开模型"), QPushButton("发给别人"),
-            QPushButton("打开目录"), QPushButton("删除"))
-        refresh.clicked.connect(self.reload)
-        open_btn.clicked.connect(self.open_selected)
-        share_btn.clicked.connect(self.share_selected)
-        folder_btn.clicked.connect(self.open_folder)
-        del_btn.clicked.connect(self.delete_selected)
-        for b in (refresh, open_btn, share_btn, folder_btn, del_btn):
-            b.setFixedHeight(34)
-            head.addWidget(b)
-        root.addLayout(head)
-        root.addWidget(make_label(
-            "outputs/ 目录下所有训练成功的模型；双击行可用 VKGS 打开，"
-            "「发给别人」准备一个体积更小的 .splat 文件，可以直接把文件发出去。"
-            "指标来自该模型的 eval.json。",
-            "caption"))
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(len(self.COLS))
-        self.table.setHorizontalHeaderLabels(self.COLS)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(38)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setAlternatingRowColors(True)
-        self.table.setShowGrid(False)
-        self.table.horizontalHeader().setHighlightSections(False)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.table.doubleClicked.connect(lambda _i: self.open_selected())
-        root.addWidget(self.table, 1)
-        self.empty_lab = make_label("还没有训练成功的模型。", "caption")
-        self.empty_lab.setVisible(False)
-        root.addWidget(self.empty_lab)
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        self.reload()
-
-    def reload(self):
-        outputs = os.path.join(PROJECT_ROOT, "outputs")
-        self.items = scan_history_models(outputs)
-        self.table.setRowCount(len(self.items))
-        for r, it in enumerate(self.items):
-            m = it["metrics"] or {}
-            vals = [
-                datetime.fromtimestamp(it["mtime"]).strftime("%Y-%m-%d %H:%M"),
-                it["name"],
-                it["quality"] or "—",
-                str(it["steps"]) if it["steps"] else "—",
-                f"{m['psnr']:.2f}" if "psnr" in m else "—",
-                f"{m['ssim']:.3f}" if "ssim" in m else "—",
-                f"{m.get('lpips_vgg', 0):.3f}" if m.get("lpips_vgg") is not None else "—",
-                f"{it['size_mb']:.1f}",
-                self._splat_mb(it),
-            ]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(v)
-                if c >= 4:  # 指标与大小列右对齐
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if c == 1:  # 模型名可能被截断，悬浮显示全名
-                    item.setToolTip(it["name"])
-                self.table.setItem(r, c, item)
-        # 列宽：时间/档位/步数/指标/大小固定，模型名列吃剩余空间
-        from PySide6.QtWidgets import QHeaderView
-        header = self.table.horizontalHeader()
-        fixed = {0: 146, 2: 72, 3: 74, 4: 86, 5: 80, 6: 92, 7: 92, 8: 96}
-        for c, w in fixed.items():
-            header.resizeSection(c, w)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for c in fixed:
-            header.setSectionResizeMode(c, QHeaderView.Fixed)
-        self.empty_lab.setVisible(not self.items)
-
-    def _selected_item(self):
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return None
-        return self.items[rows[0].row()]
-
-    def open_selected(self):
-        it = self._selected_item()
-        if not it:
-            Toast.show_toast(self, "未选择", "请先在列表里选一个模型。", "warning", 2500)
-            return
-        self.win.run_viewer(it["ply"])
-
-    @staticmethod
-    def _splat_mb(it):
-        """分享版大小；没有就显示「—」，点「发给别人」时会自动转一份。"""
-        p = it.get("splat")
-        if not p:
-            return "—"
-        try:
-            return f"{os.path.getsize(p) / 2**20:.1f}"
-        except OSError:
-            return "—"
-
-    def share_selected(self):
-        it = self._selected_item()
-        if not it:
-            Toast.show_toast(self, "未选择", "请先在列表里选一个模型。", "warning", 2500)
-            return
-        # 老模型可能没转过：按目录名命名，免得 splat.ply 转成 "splat.splat"
-        target = it.get("splat") or os.path.join(it["dir"], it["name"] + ".splat")
-        self.win.share_splat(it["ply"], splat_path=target)
-
-    def open_folder(self):
-        it = self._selected_item()
-        if not it:
-            return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(it["dir"]))
-
-    def delete_selected(self):
-        it = self._selected_item()
-        if not it:
-            return
-        if not confirm(self, "删除模型",
-                       f"确定删除「{it['name']}」吗？\n该操作不可恢复。",
-                       "删除", "取消"):
-            return
-        outputs = os.path.join(PROJECT_ROOT, "outputs")
-        ok, err = delete_history_model(it["dir"], outputs)
-        if ok:
-            Toast.show_toast(self, "已删除", it["name"], "success", 2500)
-            self.reload()
-        else:
-            Toast.show_toast(self, "删除失败", err or "未知错误", "error", 3500)
-
-
-# ================================================================== 设置页 ====
-class SettingsPage(QWidget):
-    def __init__(self, win):
-        super().__init__()
-        self.setObjectName("settingsPage")
-        self.win = win
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 20, 28, 20)
-        root.setSpacing(12)
-        root.addWidget(make_label("设置", "title"))
-        root.addWidget(make_label("只在工具路径变动时需要来这一页；训练参数在「训练设置」页。",
-                                  "caption"))
-
-        card = Card("工具路径")
-        win.colmap_edit = _path_row(
-            self, card.body_layout, "COLMAP:", win.colmap_var,
-            file=True, tip="COLMAP.bat 或 colmap.exe，留空则自动选择。")
-        win.vkpy_edit = _path_row(
-            self, card.body_layout, "VkSplat Python:", win.vksplat_py_var,
-            file=True, tip="运行训练的 Python，通常为 env/vksplat/python.exe。")
-        win.vkgs_edit = _path_row(
-            self, card.body_layout, "VKGS 查看器:", win.vkgs_var,
-            file=True, tip="vk_gaussian_splatting.exe，缺失不影响训练。")
-        root.addWidget(card)
-
-        card = Card("保存")
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        b = QPushButton("保存设置")
-        b.clicked.connect(win.save_options)
-        rl.addWidget(b)
-        rl.addStretch(1)
-        card.body_layout.addWidget(row)
-        root.addWidget(card)
-        root.addStretch(1)
-
-
-# ==================================================================== 日志页 ====
-class LogPage(QWidget):
-    COLORS = {"info": "#c8c8c8", "warn": "#f59e0b", "fail": "#ef4444",
-              "ok": "#22c55e", "dbg": "#9ca3af"}
-
-    def __init__(self, win):
-        super().__init__()
-        self.setObjectName("logPage")
-        self.win = win
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 20, 28, 20)
-        head = QHBoxLayout()
-        head.addWidget(make_label("运行日志", "title"))
-        head.addStretch(1)
-        diag = QPushButton("导出诊断包")
-        diag.setToolTip("把最近日志、自检结果和配置打包（路径已隐去），发给开发者排查问题。")
-        diag.clicked.connect(win.export_diagnostics)
-        head.addWidget(diag)
-        clear = QPushButton("清空")
-        clear.clicked.connect(lambda: self.view.clear())
-        head.addWidget(clear)
-        lay.addLayout(head)
-        self.view = QTextEdit()
-        self.view.setReadOnly(True)
-        self.view.setFont(QFont("Consolas", 10))
-        # 长时间训练会累积上万行；超出后自动丢弃最早的，内存不会一直涨
-        self.view.document().setMaximumBlockCount(5000)
-        lay.addWidget(self.view, 1)
-
-    def append_line(self, text, level):
-        import html
-        color = self.COLORS.get(level, "#c8c8c8")
-        bar = self.view.verticalScrollBar()
-        # 只有本来就停在底部才跟着滚。用户往上翻看历史时，
-        # 继续强制滚动会把他不断拽回最新一行（长任务里非常恼人）。
-        at_bottom = bar.value() >= bar.maximum() - 4
-        self.view.append(f'<span style="color:{color}">{html.escape(text)}</span>')
-        if at_bottom:
-            bar.setValue(bar.maximum())
-
-
-# ============================================================== 评估结果弹窗 ====
-class EvalDialog(QDialog):
-    def __init__(self, mean, on_view, on_share=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("训练完成 · 质量评估")
-        self.setMinimumWidth(430)
-        verdict, level, rows = judge_eval_metrics(mean)
-        color = {"good": "#16a34a", "mid": "#d97706",
-                 "bad": "#dc2626", "none": "#888888"}[level]
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 18, 22, 16)
-        lay.setSpacing(8)
-        lay.addWidget(make_label("训练完成", "title"))
-        v = QLabel(verdict)
-        v.setStyleSheet(f"color: {color}; font-weight: 600;")
-        v.setWordWrap(True)
-        lay.addWidget(v)
-        for name, value, hint in rows:
-            row = QWidget()
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 2, 0, 2)
-            a, b, c = QLabel(name), QLabel(value), make_label(hint, "caption")
-            a.setFixedWidth(100)
-            b.setFixedWidth(110)
-            c.setWordWrap(True)
-            rl.addWidget(a)
-            rl.addWidget(b)
-            rl.addWidget(c, 1)
-            lay.addWidget(row)
-        lay.addWidget(make_label("逐图明细见模型输出目录里的 eval.json", "caption"))
-        lay.addWidget(make_label(
-            "在本机看选「查看 3D 模型」（最清晰）；要把模型发给别人，"
-            "选「准备分享文件」。", "caption"))
-        btns = QHBoxLayout()
-        view = PrimaryButton("查看 3D 模型")
-        view.clicked.connect(lambda: (on_view(), self.accept()))
-        close = QPushButton("关闭")
-        close.clicked.connect(self.accept)
-        btns.addStretch(1)
-        if on_share is not None:
-            share = QPushButton("准备分享文件")
-            share.setToolTip(
-                "在 PLY 旁边准备一个体积小得多的 .splat 文件，可以直接把文件发出去。\n"
-                "对方用支持 .splat 的查看器打开（本软件就能直接打开它）。\n"
-                "分享版是固定光照，颜色会比本机预览平淡一些。")
-            share.clicked.connect(lambda: (on_share(), self.accept()))
-            btns.addWidget(share)
-        btns.addWidget(view)
-        btns.addWidget(close)
-        lay.addLayout(btns)
-
-
-# ================================================================== 自检弹窗 ====
-class _SyscheckSignals(QObject):
-    done = Signal(object)
-
-
-class SyscheckDialog(QDialog):
-    """环境自检：逐项展示检查结果。"""
-
-    def __init__(self, win):
-        super().__init__(win)
-        self.win = win
-        self._sig = _SyscheckSignals()
-        self._sig.done.connect(self._render)
-        self.setWindowTitle("环境自检")
-        self.setMinimumSize(680, 560)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 18, 22, 16)
-        lay.setSpacing(8)
-        lay.addWidget(make_label("环境自检", "title"))
-        lay.addWidget(make_label(
-            "检查这台机器能不能跑（Vulkan 能力 / 依赖 / 工具 / 耗时预估）", "caption"))
-        self.view = QTextEdit()
-        self.view.setReadOnly(True)
-        self.view.setFont(QFont("Consolas", 10))
-        lay.addWidget(self.view, 1)
-        self.conclusion = QLabel("正在检测…")
-        self.conclusion.setWordWrap(True)
-        lay.addWidget(self.conclusion)
-        btns = QHBoxLayout()
-        self.recheck = QPushButton("重新检测")
-        self.recheck.clicked.connect(self.detect)
-        close = QPushButton("关闭")
-        close.clicked.connect(self.accept)
-        btns.addWidget(self.recheck)
-        btns.addStretch(1)
-        btns.addWidget(close)
-        lay.addLayout(btns)
-        self.detect()
-
-    def detect(self):
-        self.recheck.setEnabled(False)
-        self.conclusion.setText("正在检测…")
-        self.view.setPlainText("正在检测，请稍候…")
-
-        def work():
-            summary = syscheck.summarize(
-                colmap_path=resolve_path(self.win.colmap_var.get().strip()),
-                vkgs_exe=resolve_path(self.win.vkgs_var.get().strip()),
-                quality=self.win.quality_var.get(),
-                steps=int(self.win.vs_steps_var.get()))
-            syscheck.record_check()
-            self._sig.done.emit(summary)
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _render(self, s):
-        import html
-        colors = {"ok": "#16a34a", "warn": "#d97706", "fail": "#dc2626"}
-        marks = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}
-        rows_html = []
-        for r in s["results"]:
-            c = colors.get(r.status, "#888")
-            line = (f'<span style="color:{c};font-weight:600">[{marks.get(r.status, "?")}]</span> '
-                    f'<b>{html.escape(r.name)}</b>: {html.escape(r.detail)}')
-            rows_html.append(line)
-            if r.hint:
-                rows_html.append(f'<span style="color:#d97706">    → {html.escape(r.hint)}</span>')
-        self.view.setHtml("<br>".join(rows_html))
-
-        if s["can_run"]:
-            dev = s["device"]
-            kind = "核显" if s["is_integrated"] else "独显"
-            txt = f"结论：你的机器可以跑。{dev['name']}（{kind}）"
-            if s["laptop"]:
-                txt += f"。笔记本：耗时估算已按 {syscheck.LAPTOP_PENALTY}x 保守放大"
-            est = s["est_total_sec"]
-            if est is not None:
-                note = "基于上次实测速度" if s["measured"] else "首次估算，跑过一次后会用实测修正"
-                txt += f"。预计耗时 {syscheck.format_duration(est)}（{note}）"
-            self.conclusion.setStyleSheet("color:#16a34a;")
-            self.conclusion.setText(txt)
-            if all(r.status == syscheck.OK for r in s["results"]):
-                # 全部通过：1.8 秒后自动关闭，不打断首次运行
-                QTimer.singleShot(1800, self.accept)
-        else:
-            blockers = s["blockers"] or ["无可用 Vulkan 设备"]
-            self.conclusion.setStyleSheet("color:#dc2626;")
-            self.conclusion.setText("结论：跑不动。原因：" + "、".join(blockers))
-        self.recheck.setEnabled(True)
 
 
 # ==================================================================== 主窗口 ====
@@ -834,12 +126,15 @@ class MainWindow(QMainWindow, PipelineCore):
     def __init__(self):
         PipelineCore.init_core(self)
         super().__init__()
+        _enable_crash_log()
         self.setWindowTitle(f"3DGS 快速管线 v{APP_VERSION} - COLMAP + VkSplat(Vulkan) + VKGS")
         self.resize(1020, 700)
 
         self.cfg = load_config()
         self._init_vars()
         self.sig = _Signals()
+        # 自检窗口只保留一个实例：连点按钮时复用它，不再叠出多个检测线程
+        self._syscheck_dlg = None
         # tqdm 刷屏治理：按「阶段名 -> 已写到的百分比桶」去重，
         # 每个阶段每 10% 只留一行（训练阶段由 PROGRESS 驱动，完全不记）
         self._tqdm_bucket = {}
@@ -900,7 +195,8 @@ class MainWindow(QMainWindow, PipelineCore):
         for p in (self.photo_page, self.train_settings_page, self.run_page,
                   self.history_page, self.settings_page, self.log_page):
             self.stack.addWidget(p)
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        # 经门禁再切页：照片没选好时，不让训练设置/运行页被打开
+        self.nav.currentRowChanged.connect(self._on_nav_changed)
 
         h.addWidget(sidebar)
         h.addWidget(self.stack, 1)
@@ -909,9 +205,11 @@ class MainWindow(QMainWindow, PipelineCore):
         self._load_cfg_to_widgets()
         self._connect_signals()
         self._wire_change_tracking()
+        self._update_photo_gate()      # 启动时还没选照片，「下一步」保持不可点
 
         if syscheck.is_first_run():
-            QTimer.singleShot(400, self.open_syscheck)
+            # 首次启动的自动自检：全部通过时自动收起，不挡住用户选照片
+            QTimer.singleShot(400, lambda: self.open_syscheck(auto_close=True))
 
     # ------------------------------------------------ vars / config ----
     def _init_vars(self):
@@ -952,6 +250,7 @@ class MainWindow(QMainWindow, PipelineCore):
 
     def _wire_change_tracking(self):
         self.img_edit.textChanged.connect(self.img_var.set)
+        self.img_edit.textChanged.connect(self._update_photo_gate)
         self.ws_edit.textChanged.connect(self.ws_var.set)
         self.colmap_edit.textChanged.connect(self.colmap_var.set)
         self.vkpy_edit.textChanged.connect(self.vksplat_py_var.set)
@@ -970,6 +269,41 @@ class MainWindow(QMainWindow, PipelineCore):
             lambda v: (self.res_var.set(v), self.save_options()))
         for rb in self.quality_group.buttons():
             rb.toggled.connect(lambda _checked, b=rb: self._on_quality_changed(b))
+
+    # ------------------------------------------------ 流程门禁 ----
+    def _has_selected_photos(self):
+        """照片文件夹里至少有一张能用的图，才算走完第 1 步。"""
+        return self._count_images(resolve_path(self.img_edit.text().strip())) > 0
+
+    def _update_photo_gate(self, _text=None):
+        """没选到可用照片时「下一步」不可点，和侧栏门禁用同一个判断。"""
+        self.next_btn.setEnabled(self._has_selected_photos())
+
+    def _on_nav_changed(self, row):
+        """按顺序走：照片没选好时，训练设置与运行页不许进。
+
+        历史模型 / 设置 / 日志不拦——改工具路径、翻旧模型都不依赖这次的照片。
+        """
+        if row < 0:
+            return
+        if self.NAV[row] in ("训练设置", "运行") and not self._has_selected_photos():
+            Toast.show_toast(self, "先选照片",
+                             "先在第 1 步选好照片，再进入后面的步骤。",
+                             "warning", 2600)
+            # 鼠标点击的选中动作还在 Qt 内部处理中：此刻直接改 row/页面会被
+            # 随后到来的选中覆盖（页面回去了、侧栏高亮却留在原处）。推迟一拍
+            # 再一起改回来，并确认用户没有在期间点了别的页。
+            QTimer.singleShot(0, lambda r=row: self._restore_photo_row(r))
+            return
+        self.stack.setCurrentIndex(row)
+
+    def _restore_photo_row(self, blocked_row):
+        if self.nav.currentRow() != blocked_row:
+            return      # 用户已经点了别的页，别把他拽回来
+        photo_row = self.NAV.index("照片")
+        self.nav.setCurrentRow(photo_row)
+        self.stack.setCurrentIndex(photo_row)
+        self.nav.viewport().update()      # 高亮必须和页面一起重绘，不能只回去一半
 
     def _on_quality_changed(self, rb):
         if not rb.isChecked():
@@ -1042,7 +376,7 @@ class MainWindow(QMainWindow, PipelineCore):
                 pct = step / total if total else 0.0
                 overall = self.map_progress(pct)
                 detail = f"训练 {pct*100:.0f}%"
-                if self._train_span != (0.0, 1.0):
+                if self.progress.train_span != (0.0, 1.0):
                     # 与 COLMAP 同跑时前 30% 归重建，这里补一句整条管线走到哪
                     detail += f" · 总进度 {overall*100:.0f}%"
                 detail += (f" · {step}/{total} 步 · 已用 {elapsed/60:.1f} 分钟")
@@ -1076,6 +410,11 @@ class MainWindow(QMainWindow, PipelineCore):
             m = _TQDM_RE.search(text)
             if m:
                 label = m.group("label").strip()
+                # 训练器内部用的是英文阶段名，给用户看的部分换成中文；
+                # 认不出来的（以后新增的阶段）保持原样，不丢信息。
+                label = {"Running eval": "评估质量",
+                         "Rendering val images": "渲染验证图",
+                         "Rendering train images": "渲染训练图"}.get(label, label)
                 try:
                     pct = int(m.group("pct"))
                 except (TypeError, ValueError):
@@ -1144,9 +483,12 @@ class MainWindow(QMainWindow, PipelineCore):
     def _connect_signals(self):
         self.sig.status.connect(lambda t: self.status_lab.setText(t))
         self.sig.step.connect(self.run_page.set_step_color)
+        self.sig.stage.connect(self.run_page.set_stage)
+        self.sig.stage_plan.connect(self.run_page.set_stage_plan)
         self.sig.workspace.connect(self.ws_edit.setText)
         self.sig.progress.connect(self._on_progress)
         self.sig.running.connect(self._apply_running)
+        self.sig.running.connect(self.run_page.set_run_active)
         self.sig.eval_ready.connect(self._show_eval)
         self.sig.failure.connect(self.run_page.set_failure)
         self.sig.capture.connect(self._on_capture_report)
@@ -1169,6 +511,7 @@ class MainWindow(QMainWindow, PipelineCore):
         if running:
             self.det_bar.setValue(0)
             self.run_page.fail_card.setVisible(False)   # 新一轮开始：收起上一次的报错
+            self.run_page.set_context(self._run_context_text())
             # 上一轮的百分比桶作废，否则新一次的评测前 10% 会被当成「已经记过」
             self._tqdm_bucket.clear()
         # 运行中禁用参数（照片页 + 训练设置页 + 设置页），避免中途改设置。
@@ -1193,11 +536,34 @@ class MainWindow(QMainWindow, PipelineCore):
     def set_step(self, n):
         self.sig.step.emit(n)
 
+    def set_stage(self, n):
+        self.sig.stage.emit(int(n))
+
+    def set_stage_plan(self, stages):
+        self.sig.stage_plan.emit(list(stages))
+
+    def _run_context_text(self):
+        """运行页顶部那行「本次怎么跑」：照片数、档位、分辨率、步数、评估。"""
+        n = self._count_selected_images()
+        quality = self.quality_var.get()
+        res = self.res_var.get()
+        res_txt = f"自动（{quality}档）" if res == RES_AUTO else res
+        steps = int(self.vs_steps_var.get())
+        ev = "训练后评估开启" if self.run_eval_var.get() else "训练后评估关闭"
+        txt = f"本次：{n} 张照片 · {quality}档 · 分辨率 {res_txt} · {steps} 步 · {ev}"
+        if self.progress.reuse:
+            txt += " · 复用上次定位"
+        return txt
+
+    def outputs_dir(self):
+        """模型输出根目录。页面不直接依赖 PROJECT_ROOT，测试也能整体换根目录。"""
+        return os.path.join(PROJECT_ROOT, "outputs")
+
     def set_workspace(self, path):
         self.sig.workspace.emit(path)
 
-    def show_eval(self, mean):
-        self.sig.eval_ready.emit(mean)
+    def show_eval(self, mean, stats=None):
+        self.sig.eval_ready.emit(mean, stats or {})
 
     def show_failure(self, cause, advice):
         """核心在工作线程调用：把「原因 / 怎么办」送到训练页卡片。"""
@@ -1262,6 +628,48 @@ class MainWindow(QMainWindow, PipelineCore):
             return confirm(self, "耗时预估", "\n".join(lines), "继续", "取消")
         except Exception:
             return True
+
+    def ask_reuse_colmap(self, n_imgs, ws_dir):
+        """上次的空间定位还能用：让用户决定复用还是重算，不替用户做主。"""
+        name = os.path.basename(ws_dir.rstrip("/\\"))
+        return confirm(
+            self, "可以复用上次的空间定位",
+            f"工作区「{name}」里已有用这 {n_imgs} 张照片做好的空间定位，"
+            f"照片和「最大图像尺寸」都没有变。\n\n"
+            f"复用：跳过 COLMAP 的三步，直接开始训练，能省几分钟。\n"
+            f"重新计算：从头再跑一遍 COLMAP。受随机采样与多线程计算影响，"
+            f"结果通常很接近，但不保证与上次完全一致。",
+            "复用（快）", "重新计算")
+
+    def ask_retrain_existing(self, ws_dir, cfg):
+        """相同照片 + 相同设置已经训过：给「重新训练 / 查看已有模型 / 取消」。"""
+        settings = cfg.get("settings") or {}
+        ply = cfg.get("ply") or ""
+        name = os.path.splitext(os.path.basename(ply))[0] or os.path.basename(ply)
+        when = str(cfg.get("finished_at") or "").replace("T", " ")
+        detail = " · ".join(x for x in (
+            f"{settings.get('steps')} 步" if settings.get("steps") else "",
+            str(settings.get("quality") or ""),
+            str(settings.get("res_choice") or ""),
+        ) if x)
+        box = QMessageBox(self)
+        box.setWindowTitle("这组照片已经训练过了")
+        box.setText(f"「{name}」就是用这组照片和相同设置训练出来的。{when}")
+        box.setInformativeText(
+            (f"训练设置：{detail}\n\n" if detail else "")
+            + "要重新训练一遍，还是直接看已有模型？")
+        box.addButton("重新训练", QMessageBox.AcceptRole)
+        view = box.addButton("查看已有模型", QMessageBox.ActionRole)
+        cancel = box.addButton("取消", QMessageBox.RejectRole)
+        box.setDefaultButton(view)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is view:
+            self.run_viewer(ply)
+            return "view"
+        if clicked is cancel or clicked is None:
+            return "cancel"
+        return "retrain"
 
     def ask_resume(self):
         ws = resolve_path(self.ws_var.get().strip() or "")
@@ -1493,8 +901,24 @@ class MainWindow(QMainWindow, PipelineCore):
         if ply:
             self.share_splat(ply)
 
-    def open_syscheck(self):
-        SyscheckDialog(self).exec()
+    def open_syscheck(self, auto_close=False):
+        """打开环境自检（单实例、非模态）。
+
+        连点时只把已有窗口提到前面：每点一次就 new 一个对话框会在后台叠出
+        多个自检线程，还可能出现「窗口已经关掉、检测线程还在往它发结果」。
+        """
+        dlg = self._syscheck_dlg
+        if dlg is not None and dlg.isVisible():
+            dlg.raise_()
+            dlg.activateWindow()
+            return
+        if dlg is None:
+            self._syscheck_dlg = dlg = SyscheckDialog(self)
+        dlg.auto_close = auto_close
+        dlg.detect()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def export_diagnostics(self):
         """收集日志/自检/配置打成 zip（后台线程，避免卡住 UI）。"""
@@ -1538,14 +962,21 @@ class MainWindow(QMainWindow, PipelineCore):
             except OSError as e:
                 self._log(f"[WARN] 无法打开文件夹: {e}")
 
-    def _show_eval(self, mean):
+    def _show_eval(self, mean, stats=None):
         dlg = EvalDialog(mean, on_view=self.open_viewer,
-                         on_share=self.share_latest_splat, parent=self)
+                         on_share=self.share_latest_splat, parent=self,
+                         stats=stats or {})
         dlg.exec()
 
     # 三个开始入口（按钮绑定）
     def start_pipeline(self):
         self._sync_edits_to_vars()
+        if not self._has_selected_photos():
+            # 没照片就不该起步：回到第 1 步，别让运行页空转一圈再报错
+            Toast.show_toast(self, "还没有照片",
+                             "先在第 1 步选好照片，再开始生成。", "warning", 2600)
+            self.nav.setCurrentRow(self.NAV.index("照片"))
+            return
         # 开始后直接切到运行页：进度与排错都在那里，不用用户自己找
         self.nav.setCurrentRow(self.NAV.index("运行"))
         self.start(True, True)
@@ -1553,7 +984,8 @@ class MainWindow(QMainWindow, PipelineCore):
     def start_colmap_only(self):
         self._sync_edits_to_vars()
         self.nav.setCurrentRow(self.NAV.index("运行"))
-        self.start(True, False)
+        # 这个入口的语义就是「重做空间定位」，所以强制重算、不询问复用
+        self.start(True, False, force_colmap=True)
 
     def start_train_only(self):
         self._sync_edits_to_vars()

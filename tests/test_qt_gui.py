@@ -193,6 +193,10 @@ class QtGuiTestCase(unittest.TestCase):
 
     def test_failure_card_shows_on_panel_and_resets_on_next_run(self):
         """失败卡片要真的出现在训练页，且下一轮开始时收起。"""
+        # 失败只会发生在跑起来之后；先让第 1 步有照片，运行页才进得去
+        d = tempfile.mkdtemp(prefix="photo_")
+        open(os.path.join(d, "p.jpg"), "w").close()
+        self.win.img_edit.setText(d)
         card = self.win.run_page.fail_card
         self.assertFalse(card.isVisibleTo(self.win))
         self.win.show_failure("显存不够，分配失败", "把质量档位调低一档后重试")
@@ -318,15 +322,15 @@ class QtGuiTestCase(unittest.TestCase):
         got = []
         self.win.sig.progress.connect(lambda f, d: got.append((round(f, 3), d)))
         self.win._ips_recorded = True        # 别让测试写进耗时统计
-        self.win._train_span = (0.0, 1.0)
+        self.win.progress.train_span = (0.0, 1.0)
         self.win._set_span(0.0, 1.0)
         self.win._log("PROGRESS: 7500/15000 300.0 300.0 123456")
         self.assertEqual(got[-1][0], 0.5)
         self.assertIn("训练 50%", got[-1][1])
         self.assertNotIn("总进度", got[-1][1])
         # 与 COLMAP 同跑（训练只占后 70%）时才补一句整条管线走到哪
-        self.win._train_span = (0.30, 1.0)
-        self.win._set_span(*self.win._train_span)
+        self.win.progress.train_span = (0.30, 1.0)
+        self.win._set_span(*self.win.progress.train_span)
         self.win._log("PROGRESS: 7500/15000 300.0 300.0 123456")
         self.assertEqual(got[-1][0], 0.65)
         self.assertIn("总进度 65%", got[-1][1])
@@ -430,11 +434,318 @@ class QtGuiTestCase(unittest.TestCase):
     def test_start_switches_to_run_page(self):
         """点开始后自动切到运行页：进度与排错都在那里。"""
         from unittest import mock
+        d = tempfile.mkdtemp(prefix="photo_")
+        open(os.path.join(d, "p.jpg"), "w").close()
+        self.win.img_edit.setText(d)
         self.win.nav.setCurrentRow(self.win.NAV.index("训练设置"))
         with mock.patch.object(self.win, "start") as m:
             self.win.start_pipeline()
         self.assertEqual(self.win.nav.currentRow(), self.win.NAV.index("运行"))
         m.assert_called_once()
+
+    def test_next_button_requires_photos(self):
+        """没选到可用照片时「下一步」不可点。"""
+        self.assertFalse(self.win.next_btn.isEnabled())
+        d = tempfile.mkdtemp(prefix="photo_")
+        open(os.path.join(d, "p.jpg"), "w").close()
+        self.win.img_edit.setText(d)
+        _app.processEvents()
+        self.assertTrue(self.win.next_btn.isEnabled())
+        self.win.img_edit.setText("")
+        _app.processEvents()
+        self.assertFalse(self.win.next_btn.isEnabled())
+
+    def test_nav_blocks_later_steps_without_photos(self):
+        """侧栏也按顺序走：没照片进不了训练设置/运行页，但设置页随时能进。"""
+        toasts = []
+        orig = qg.Toast.show_toast
+        qg.Toast.show_toast = staticmethod(
+            lambda parent, title, msg, kind, ms: toasts.append(title))
+        try:
+            self.win.nav.setCurrentRow(self.win.NAV.index("训练设置"))
+            _app.processEvents()
+            self.assertEqual(self.win.nav.currentRow(), self.win.NAV.index("照片"))
+            self.assertEqual(self.win.stack.currentIndex(), self.win.NAV.index("照片"))
+            self.assertIn("先选照片", toasts)
+            # 设置页不受影响
+            self.win.nav.setCurrentRow(self.win.NAV.index("设置"))
+            self.assertEqual(self.win.stack.currentIndex(), self.win.NAV.index("设置"))
+            # 选好照片后，训练设置可进
+            d = tempfile.mkdtemp(prefix="photo_")
+            open(os.path.join(d, "p.jpg"), "w").close()
+            self.win.img_edit.setText(d)
+            self.win.nav.setCurrentRow(self.win.NAV.index("照片"))
+            self.win.nav.setCurrentRow(self.win.NAV.index("训练设置"))
+            self.assertEqual(self.win.stack.currentIndex(),
+                             self.win.NAV.index("训练设置"))
+        finally:
+            qg.Toast.show_toast = orig
+
+    def test_nav_highlight_returns_to_photo_after_real_click(self):
+        """真实点击被拦时，侧栏高亮也要退回照片页（曾出现内容回去了、高亮没回）。"""
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        toasts = []
+        orig = qg.Toast.show_toast
+        qg.Toast.show_toast = staticmethod(lambda *a, **k: toasts.append(a[1]))
+        try:
+            self.win.show()
+            _app.processEvents()
+            item = self.win.nav.item(self.win.NAV.index("运行"))
+            rect = self.win.nav.visualItemRect(item)
+            QTest.mouseClick(self.win.nav.viewport(), Qt.LeftButton,
+                             pos=rect.center())
+            for _ in range(5):
+                _app.processEvents()
+            self.assertEqual(self.win.nav.currentRow(), self.win.NAV.index("照片"))
+            self.assertEqual(self.win.stack.currentIndex(), self.win.NAV.index("照片"))
+            self.assertIn("先选照片", "".join(toasts))
+        finally:
+            qg.Toast.show_toast = orig
+
+    def test_start_without_photos_stays_on_photo_page(self):
+        from unittest import mock
+        toasts = []
+        orig = qg.Toast.show_toast
+        qg.Toast.show_toast = staticmethod(
+            lambda parent, title, msg, kind, ms: toasts.append(title))
+        try:
+            with mock.patch.object(self.win, "start") as m:
+                self.win.start_pipeline()
+            m.assert_not_called()
+        finally:
+            qg.Toast.show_toast = orig
+        self.assertEqual(self.win.nav.currentRow(), self.win.NAV.index("照片"))
+        self.assertIn("还没有照片", toasts)
+
+    def test_syscheck_entry_belongs_to_the_first_step(self):
+        """环境自检是开跑前的预备动作：在照片页，不与运行页的控制按钮混在一起。"""
+        self.assertTrue(self.win.photo_page.isAncestorOf(self.win.check_btn))
+        self.assertFalse(self.win.run_page.isAncestorOf(self.win.check_btn))
+
+    def _wait_syscheck(self, dlg, timeout=6.0):
+        deadline = time.time() + timeout
+        while dlg._busy and time.time() < deadline:
+            _app.processEvents()
+            time.sleep(0.02)
+        _app.processEvents()
+        self.assertFalse(dlg._busy, "自检线程没有在超时内结束")
+
+    def test_syscheck_reuses_one_dialog_and_one_detection(self):
+        """连点自检只允许一个窗口、一个检测线程（之前会叠出多个）。"""
+        from unittest import mock
+        started = []
+
+        def slow_summarize(**kwargs):
+            started.append(1)
+            time.sleep(0.6)
+            return {"results": [], "can_run": False, "blockers": ["测试"],
+                    "device": None, "is_integrated": None, "laptop": False,
+                    "measured": False, "est_train_sec": None,
+                    "est_colmap_sec": None, "est_total_sec": None}
+
+        with mock.patch.object(qg.syscheck, "summarize", slow_summarize), \
+                mock.patch.object(qg.syscheck, "record_check", lambda: None):
+            self.win.open_syscheck()
+            dlg = self.win._syscheck_dlg
+            self.assertIsNotNone(dlg)
+            self.assertTrue(dlg.isVisible())
+            self.win.open_syscheck()      # 窗口已打开：只前置，不再新建
+            self.assertIs(self.win._syscheck_dlg, dlg)
+            dlg.detect()                  # 检测进行中：忽略，不叠线程
+            self.assertEqual(len(started), 1)
+            self._wait_syscheck(dlg)
+        dlg.close()
+
+    def test_syscheck_thread_failure_is_reported(self):
+        """检测线程抛异常也要有结果：不能把按钮永远卡在「检测中」。"""
+        from unittest import mock
+
+        def boom(**kwargs):
+            raise RuntimeError("枚举炸了")
+
+        with mock.patch.object(qg.syscheck, "summarize", boom):
+            self.win.open_syscheck()
+            dlg = self.win._syscheck_dlg
+            self._wait_syscheck(dlg)
+        self.assertIn("自检失败", dlg.conclusion.text())
+        self.assertIn("枚举炸了", dlg.conclusion.text())
+        self.assertTrue(dlg.recheck.isEnabled())
+        dlg.close()
+
+    def test_stage_timeline_hides_unused_stages_and_renumbers(self):
+        """只训练且不做评估时，时间线只留 准备/训练/导出，并重新编号。"""
+        page = self.win.run_page
+        chips = {idx: chip for idx, _name, chip in page.stage_chips}
+        page.set_stage_plan([4, 5, 7])
+        for idx in (1, 2, 3, 6):
+            self.assertTrue(chips[idx].isHidden(), f"第 {idx} 段应隐藏")
+        self.assertEqual(chips[4].text(), "1 准备")
+        self.assertEqual(chips[5].text(), "2 训练")
+        self.assertEqual(chips[7].text(), "3 导出")
+        # 走到训练：准备打勾，训练高亮；倒退和计划外的段都不接受
+        page.set_stage(5)
+        self.assertEqual(chips[4].text(), "✓ 准备")
+        self.assertIn(qg.qt_theme.ACCENT, chips[5].styleSheet())
+        page.set_stage(4)
+        page.set_stage(1)
+        self.assertEqual(chips[5].text(), "2 训练")
+        self.assertIn(qg.qt_theme.ACCENT, chips[5].styleSheet())
+
+    def test_run_context_lists_photos_resolution_and_steps(self):
+        """开跑时把「这次是怎么跑的」摆出来，免得用户回训练设置页核对。"""
+        d = tempfile.mkdtemp(prefix="ctx_")
+        for i in range(3):
+            open(os.path.join(d, "p%d.jpg" % i), "w").close()
+        self.win.img_edit.setText(d)
+        self.win.steps_spin.setValue(8000)
+        self.win._sync_edits_to_vars()
+        self.win._apply_running(True, False)
+        txt = self.win.ctx_lab.text()
+        self.assertIn("3 张照片", txt)
+        self.assertIn("8000 步", txt)
+        self.assertIn("分辨率", txt)
+
+    def test_meta_line_reports_elapsed_and_estimate(self):
+        """秒级的整体用时：只靠阶段文字看不出「一共跑了多久」。"""
+        self.win.det_bar.setValue(50)
+        self.win.run_page._run_t0 = time.monotonic() - 65
+        self.win.run_page._tick()
+        txt = self.win.meta_lab.text()
+        self.assertIn("1 分 05 秒", txt)
+        self.assertIn("整体 50%", txt)
+        self.assertIn("约还需", txt)
+
+    def test_toast_fades_in_and_cleans_up_after_fade_out(self):
+        """提示条要淡入（从透明开始），停留结束后淡出并回收，不留空壳。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
+        qg.Toast.show_toast(self.win, "标题", "内容", "info", 150)
+        holders = [w for w in self.win.findChildren(QWidget)
+                   if isinstance(w.graphicsEffect(), QGraphicsOpacityEffect)]
+        self.assertEqual(len(holders), 1)
+        self.assertLess(holders[0].graphicsEffect().opacity(), 0.5,
+                        "淡入应从接近透明开始，不能一出现就满不透明")
+        QTest.qWait(800)
+        holders = [w for w in self.win.findChildren(QWidget)
+                   if isinstance(w.graphicsEffect(), QGraphicsOpacityEffect)]
+        self.assertEqual(holders, [], "淡出结束后应把提示条回收")
+
+    def _make_reusable_workspace(self, n=3):
+        root = tempfile.mkdtemp(prefix="reuse_")
+        imgs = os.path.join(root, "photos")
+        ws = os.path.join(root, "ws")
+        os.makedirs(imgs)
+        os.makedirs(os.path.join(ws, "sparse", "0"))
+        for name in ("cameras.bin", "images.bin", "points3D.bin"):
+            open(os.path.join(ws, "sparse", "0", name), "wb").close()
+        for i in range(n):
+            with open(os.path.join(imgs, "p%d.jpg" % i), "wb") as f:
+                f.write(b"x")
+        pc.write_colmap_meta(ws, imgs, 1600)
+        return imgs, ws
+
+    def test_start_asks_before_reusing_colmap(self):
+        """照片/参数没变时先问一句；选复用则跳过 COLMAP，时间线也相应收起。"""
+        imgs, ws = self._make_reusable_workspace()
+        self.win.img_edit.setText(imgs)
+        self.win.ws_edit.setText(ws)
+        self.win._sync_edits_to_vars()
+        seen, cont = [], []
+        orig_confirm, orig_thread = qg.confirm, self.win.pipeline_thread
+        qg.confirm = lambda parent, title, text, yes, no: (
+            seen.append((title, text, yes)), True)[1]
+        self.win.pipeline_thread = lambda **kw: None
+        self.win.ask_resume = lambda: None
+        self.win.ask_continue = lambda do: (cont.append(do), True)[1]
+        try:
+            self.win.start(True, True)
+        finally:
+            qg.confirm = orig_confirm
+            self.win.pipeline_thread = orig_thread
+            self.win.set_running(False, True)
+        self.assertEqual(len(seen), 1, "没有询问复用")
+        self.assertIn("复用上次的空间定位", seen[0][0])
+        self.assertIn("3 张照片", seen[0][1])
+        self.assertEqual(seen[0][2], "复用（快）")
+        self.assertEqual(cont, [False], "复用后的耗时预估不应再算 COLMAP")
+        self.assertTrue(self.win.progress.reuse)
+        self.assertIn("复用上次定位", self.win.ctx_lab.text())
+        chips = {idx: chip for idx, _name, chip in self.win.run_page.stage_chips}
+        self.assertTrue(chips[1].isHidden(), "复用时不该再显示 COLMAP 三段")
+        self.assertFalse(chips[4].isHidden())
+
+    def test_colmap_only_entry_forces_recompute(self):
+        """「只用 COLMAP」入口的语义是重做定位，不能顺手复用旧结果。"""
+        from unittest import mock
+        with mock.patch.object(self.win, "start") as m:
+            self.win.start_colmap_only()
+        m.assert_called_once_with(True, False, force_colmap=True)
+
+    def test_completion_dialog_shows_training_settings_when_eval_off(self):
+        """评测关掉后训练完成弹窗仍要出现，并展示这次是怎么跑的。"""
+        dlg = qg.EvalDialog(None, on_view=lambda: None,
+                            stats={"quality": "快速", "steps": 5000,
+                                   "res_label": "原分辨率", "n_imgs": 128,
+                                   "mcmc": False, "seconds": 80.0,
+                                   "num_splats": 123456, "peak_vram_gb": 0.43})
+        texts = "\n".join(lab.text() for lab in dlg.findChildren(qg.QLabel))
+        for want in ("5,000 步", "原分辨率", "128 张", "1 分 20 秒",
+                     "123,456 个", "0.43 GB", "没有质量评估分数"):
+            self.assertIn(want, texts)
+        dlg.close()
+
+    def _prepare_trained_workspace(self):
+        imgs, ws = self._make_reusable_workspace()
+        # 这组测试只关心「训练过没有」；把 COLMAP 复用记录去掉，免得再弹复用窗
+        meta = os.path.join(ws, pc.COLMAP_META_FILE)
+        if os.path.isfile(meta):
+            os.remove(meta)
+        ply = os.path.join(ws, "splat.ply")
+        open(ply, "wb").close()
+        self.win.img_edit.setText(imgs)
+        self.win.ws_edit.setText(ws)
+        self.win._sync_edits_to_vars()
+        pc.write_train_config(ws, imgs, self.win._train_settings(), ply,
+                              model_dir=os.path.join(ws, "out"))
+        return imgs, ws, ply
+
+    def test_start_warns_when_same_settings_already_trained(self):
+        """照片和设置都一致时先提醒；选取消则不启动任何工作线程。"""
+        self._prepare_trained_workspace()
+        asked, ran = [], []
+        self.win.ask_retrain_existing = lambda w, cfg: (asked.append(cfg), "cancel")[1]
+        self.win.ask_resume = lambda: None
+        self.win.ask_continue = lambda do: True
+        self.win.pipeline_thread = lambda **kw: ran.append(kw)
+        self.win.start(True, True)
+        self.assertEqual(len(asked), 1)
+        self.assertIn("settings", asked[0])
+        self.assertEqual(ran, [])
+
+    def test_no_retrain_prompt_after_settings_change(self):
+        self._prepare_trained_workspace()
+        self.win.steps_spin.setValue(8000)   # 设置变了，不该再提示「训练过」
+        asked, cont = [], []
+        self.win.ask_retrain_existing = lambda *a: asked.append(1) or "cancel"
+        self.win.ask_resume = lambda: None
+        self.win.ask_continue = lambda do: (cont.append(do), False)[1]
+        self.win.start(True, True)
+        self.assertEqual(asked, [])
+        self.assertEqual(cont, [True], "应继续走正常的耗时确认流程")
+
+    def test_resuming_does_not_warn_about_duplicate_training(self):
+        """有未完成训练恢复点时应走续训，不该说「已经训练过」。"""
+        _imgs, ws, _ply = self._prepare_trained_workspace()
+        open(os.path.join(ws, "checkpoint.ply"), "wb").close()
+        with open(os.path.join(ws, "checkpoint.ply.step"), "w", encoding="utf-8") as f:
+            f.write("1000")
+        asked = []
+        self.win.ask_retrain_existing = lambda *a: asked.append(1) or "cancel"
+        self.win.ask_resume = lambda: None
+        self.win.ask_continue = lambda do: False
+        self.win.start(True, True)
+        self.assertEqual(asked, [])
 
     def test_share_splat_actually_generates_file(self):
         """端到端跑 share_splat 本身。

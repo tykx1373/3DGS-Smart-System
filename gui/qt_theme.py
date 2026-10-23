@@ -12,11 +12,13 @@ PySide6-Fluent-Widgets。PySide6 本身为 LGPLv3，动态链接可自由分发�
 import os
 import tempfile
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
+from PySide6.QtCore import (
+    Qt, QTimer, QRectF, QPointF, QPropertyAnimation, QEasingCurve,
+)
 from PySide6.QtGui import QFont, QColor, QPainter, QPixmap, QPainterPath, QPen, QBrush
 from PySide6.QtWidgets import (
     QApplication, QFrame, QLabel, QPushButton, QMessageBox,
-    QGraphicsDropShadowEffect, QVBoxLayout,
+    QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QVBoxLayout,
 )
 
 FONT_FAMILY = "Microsoft YaHei UI"
@@ -343,7 +345,11 @@ _TOAST_COLOR = {"info": ACCENT, "success": GREEN_BRIGHT,
 
 
 class Toast(QFrame):
-    """轻量顶部通知条：自动消失，不抢焦点。"""
+    """轻量顶部通知条：淡入、停留、淡出，不抢焦点。"""
+
+    FADE_IN_MS = 180
+    FADE_OUT_MS = 220
+    SHADOW_MARGIN = 24      # 外层容器给投影留的余量
 
     def __init__(self, parent, title, message, kind="info"):
         super().__init__(parent)
@@ -372,12 +378,49 @@ class Toast(QFrame):
         if host is None:
             return
         toast = Toast(host, title, message, kind)
-        toast.adjustSize()
-        x = (host.width() - toast.width()) // 2
-        toast.move(max(12, x), 20)
-        toast.show()
-        toast.raise_()
-        QTimer.singleShot(duration, toast.close)
+        # 一个控件只能挂一个 QGraphicsEffect：Toast 自己要投影，所以把透明度
+        # 动画放在一层透明外框上，两者互不抢占。
+        holder = QFrame(host)
+        holder.setAttribute(Qt.WA_TransparentForMouseEvents)
+        lay = QVBoxLayout(holder)
+        m = Toast.SHADOW_MARGIN
+        lay.setContentsMargins(m, m, m, m)
+        lay.addWidget(toast)
+        holder.adjustSize()
+
+        effect = QGraphicsOpacityEffect(holder)
+        effect.setOpacity(0.0)      # 先透明，避免出现一帧“闪一下”
+        holder.setGraphicsEffect(effect)
+
+        x = (host.width() - holder.width()) // 2
+        holder.move(max(8, x), 20 - m)
+        holder.show()
+        holder.raise_()
+
+        fade_in = QPropertyAnimation(effect, b"opacity", holder)
+        fade_in.setDuration(Toast.FADE_IN_MS)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        holder._fade_in = fade_in
+        fade_in.start()
+
+        def fade_out():
+            out = QPropertyAnimation(effect, b"opacity", holder)
+            out.setDuration(Toast.FADE_OUT_MS)
+            out.setStartValue(effect.opacity())
+            out.setEndValue(0.0)
+            out.setEasingCurve(QEasingCurve.InCubic)
+            # 动画对象挂在外框上，淡出结束连提示条一起回收
+            out.finished.connect(holder.deleteLater)
+            holder._fade_out = out
+            out.start()
+
+        # 计时器也挂在外框上：主窗口先关掉时它跟着销毁，不会回调已删除的控件
+        close_timer = QTimer(holder)
+        close_timer.setSingleShot(True)
+        close_timer.timeout.connect(fade_out)
+        close_timer.start(duration)
 
 
 # --------------------------------------------------------------- 对话框 ----
