@@ -51,6 +51,8 @@ if (-not (Test-Path $SetupScript)) { throw "Setup script not found: $SetupScript
 
 # Locate ISCC (common install locations + PATH)
 $isccCandidates = @(
+    (Join-Path $env:SystemDrive 'Inno Setup 7\ISCC.exe'),
+    (Join-Path $env:SystemDrive 'Inno Setup 6\ISCC.exe'),
     (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 7\ISCC.exe'),
     (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe'),
     (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
