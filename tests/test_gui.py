@@ -1254,6 +1254,20 @@ class TestCliHost(unittest.TestCase):
         import pipeline_cli as cli
         self.assertEqual(cli.main(["--images", ROOT, "--colmap-only", "--train-only"]), 2)
 
+    def test_log_survives_non_utf8_stream(self):
+        """CI 的管道 stdout 是 cp1252：中文日志不能把 CLI 打崩。"""
+        import io
+        import pipeline_cli as cli
+        buf = io.BytesIO()
+        stream = io.TextIOWrapper(buf, encoding="cp1252")
+        old = sys.stdout
+        sys.stdout = stream
+        try:
+            cli._emit("[INFO] 复用工作区里的空间定位结果")
+        finally:
+            sys.stdout = old
+        self.assertTrue(buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

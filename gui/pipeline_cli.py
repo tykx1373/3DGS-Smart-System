@@ -26,6 +26,30 @@ from pipeline_core import (  # noqa: E402
 QUALITY_ARGS = {"fast": "快速", "standard": "标准", "high": "高质量"}
 
 
+def _force_utf8_output():
+    """CI 与英文 Windows 的管道输出默认是 cp1252，中文日志会直接抛
+    UnicodeEncodeError；统一切到 UTF-8。没有 reconfigure 的流就跳过。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def _emit(text, stream=None):
+    """打印兜底：流不支持中文时用 ? 代替，绝不能因为一条日志把程序打崩。"""
+    stream = stream or sys.stdout
+    try:
+        print(text, file=stream, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(stream, "encoding", "") or "utf-8"
+        print(text.encode(enc, "replace").decode(enc, "replace"),
+              file=stream, flush=True)
+
+
+_force_utf8_output()
+
+
 class _Var:
     """Tk Var 风格的 get/set 适配对象，供 PipelineCore 无差别读取。"""
 
@@ -76,10 +100,10 @@ class CliHost(PipelineCore):
     def _log(self, text):
         if "[OK] COLMAP 空间定位完成" in text:
             self.colmap_ok = True
-        print(text, flush=True)
+        _emit(text)
 
     def set_status(self, text):
-        print(f"== {text}", flush=True)
+        _emit(f"== {text}")
 
     def set_step(self, n):
         pass
@@ -97,10 +121,10 @@ class CliHost(PipelineCore):
         pct = int(frac * 100)
         if pct >= self._last_pct + 10:
             self._last_pct = pct
-            print(f"[{pct:3d}%] {detail}", flush=True)
+            _emit(f"[{pct:3d}%] {detail}")
 
     def set_workspace(self, path):
-        print(f"[INFO] 工作区: {path}", flush=True)
+        _emit(f"[INFO] 工作区: {path}")
 
     def set_running(self, running, indeterminate=False):
         if running:
@@ -172,11 +196,11 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.colmap_only and args.train_only:
-        print("--colmap-only 与 --train-only 不能同时使用", file=sys.stderr)
+        _emit("--colmap-only 与 --train-only 不能同时使用", sys.stderr)
         return 2
     img_dir = resolve_path(args.images)
     if not os.path.isdir(img_dir):
-        print(f"照片文件夹不存在: {img_dir}", file=sys.stderr)
+        _emit(f"照片文件夹不存在: {img_dir}", sys.stderr)
         return 2
 
     host = CliHost(args)
@@ -190,14 +214,14 @@ def main(argv=None):
 
     host.start(do_colmap, do_train, force_colmap=args.force_colmap)
     if not host.started:
-        print("管线没有启动（检查照片文件夹与参数）。", file=sys.stderr)
+        _emit("管线没有启动（检查照片文件夹与参数）。", sys.stderr)
         return 2
 
     try:
         while not host.done.wait(0.5):
             pass
     except KeyboardInterrupt:
-        print("\n[WARN] 收到 Ctrl+C，正在安全停止（保存恢复点）...", file=sys.stderr)
+        _emit("\n[WARN] 收到 Ctrl+C，正在安全停止（保存恢复点）...", sys.stderr)
         host.stop_pipeline()
         host.done.wait(30)
         return 130
@@ -211,15 +235,15 @@ def main(argv=None):
         success = False
     if not success:
         cause, advice = host.failure or ("运行失败", "查看上面的日志最后几行")
-        print(f"\n[FAIL] {cause}\n[WARN] 建议: {advice}", file=sys.stderr)
+        _emit(f"\n[FAIL] {cause}\n[WARN] 建议: {advice}", sys.stderr)
         return 1
 
     if do_train:
         _img, _n, ws_dir = host._run_paths()
         if ws_dir:
             out = host._make_output_ply_name(ws_dir)
-            print(f"[OK] 模型: {out}（工作区 {relativize_path(ws_dir)}）", flush=True)
-    print(f"[OK] 完成，用时 {elapsed / 60:.1f} 分钟", flush=True)
+            _emit(f"[OK] 模型: {out}（工作区 {relativize_path(ws_dir)}）")
+    _emit(f"[OK] 完成，用时 {elapsed / 60:.1f} 分钟")
     return 0
 
 
