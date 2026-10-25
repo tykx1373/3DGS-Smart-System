@@ -7,7 +7,7 @@
 ; 版本号的唯一来源是 gui\app_version.py 的 APP_VERSION（build_setup.ps1 解析后
 ; 通过 /DMyAppVersion= 传入）；直接用 ISCC 编译时用此处默认值，改版本请两处同步
 #ifndef MyAppVersion
-  #define MyAppVersion "2.4.1"
+  #define MyAppVersion "2.4.2"
 #endif
 #define MyAppPublisher "3DGS Studio"
 #define MyAppExeName "3DGS-Studio.exe"

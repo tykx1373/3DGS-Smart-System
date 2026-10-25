@@ -369,7 +369,7 @@ A: Click "Prepare share file" in the training summary, or select a model on the 
 A: No. Checkpoints are saved every 1,000 steps; "Stop" saves the exact current progress. Next time the GUI detects the checkpoint and asks whether to resume. After an abnormal exit (crash/power loss), progress rolls back to the last automatic thousand-step checkpoint.
 
 **Q: How do I check which version I installed?**
-A: The window title bar and sidebar brand area show the version (e.g. `v2.4.1`); the diagnostic bundle also includes it. Compare the installer SHA-256 with the Releases page if you suspect an old build.
+A: The window title bar and sidebar brand area show the version (e.g. `v2.4.2`); the diagnostic bundle also includes it. Compare the installer SHA-256 with the Releases page if you suspect an old build.
 
 **Q: Where are the logs?**
 A: The "Run log" expander at the bottom of the GUI shows the live log; daily logs are kept under `logs/`.
