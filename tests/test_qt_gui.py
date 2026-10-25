@@ -832,5 +832,85 @@ class QtGuiTestCase(unittest.TestCase):
             pc.PROJECT_ROOT = orig
 
 
+    # ------------------------------------------------- 最小化到托盘 ----
+    def test_close_while_running_hides_to_tray(self):
+        from unittest import mock
+        win = self.win
+        win._task_running = True
+        win._tray = mock.MagicMock()
+        event = mock.MagicMock()
+        try:
+            with mock.patch.object(qg, "confirm", return_value=True), \
+                    mock.patch.object(qg.MainWindow, "hide") as hide:
+                win.closeEvent(event)
+            event.ignore.assert_called_once()
+            hide.assert_called_once()
+            win._tray.show.assert_called_once()
+        finally:
+            win._task_running = False
+            win._tray = None
+
+    def test_close_while_running_cancel_keeps_window(self):
+        from unittest import mock
+        win = self.win
+        win._task_running = True
+        win._tray = mock.MagicMock()
+        event = mock.MagicMock()
+        try:
+            with mock.patch.object(qg, "confirm", return_value=False), \
+                    mock.patch.object(qg.MainWindow, "hide") as hide:
+                win.closeEvent(event)
+            event.ignore.assert_called_once()
+            hide.assert_not_called()
+            win._tray.show.assert_not_called()
+        finally:
+            win._task_running = False
+            win._tray = None
+
+    def test_close_when_idle_accepts(self):
+        from unittest import mock
+        win = self.win
+        win._task_running = False
+        win._tray = mock.MagicMock()
+        event = mock.MagicMock()
+        win.closeEvent(event)
+        event.accept.assert_called_once()
+        win._tray = None
+
+    def test_minimize_while_running_schedules_tray(self):
+        from unittest import mock
+        win = self.win
+        win._task_running = True
+        win._tray = mock.MagicMock()
+        event = qg.QEvent(qg.QEvent.Type.WindowStateChange)
+        try:
+            with mock.patch.object(qg.QTimer, "singleShot") as shot, \
+                    mock.patch.object(qg.MainWindow, "isMinimized", return_value=True):
+                win.changeEvent(event)
+            shot.assert_called_once()
+        finally:
+            win._task_running = False
+            win._tray = None
+
+    def test_restore_from_tray_hides_icon(self):
+        from unittest import mock
+        win = self.win
+        win._tray = mock.MagicMock()
+        win._restore_from_tray()
+        win._tray.hide.assert_called_once()
+        win._tray = None
+
+    def test_apply_running_tracks_task_state(self):
+        from unittest import mock
+        win = self.win
+        win._tray = mock.MagicMock()
+        win._tray.isVisible.return_value = False
+        win._apply_running(True, False)
+        self.assertTrue(win._task_running)
+        win._apply_running(False, False)
+        self.assertFalse(win._task_running)
+        win._tray = None
+
+
 if __name__ == "__main__":
     unittest.main()

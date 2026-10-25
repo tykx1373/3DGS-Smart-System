@@ -42,6 +42,8 @@
 - [x] 重复训练提醒（工作区与模型目录写 `train_config.json`，
       照片与训练设置完全一致时提示查看旧模型或重新训练）
 - [x] 环境自检单实例与连点崩溃修复；提示条淡入淡出
+- [x] 任务运行时最小化/关闭收进系统托盘（关闭前先确认），训练继续在后台；
+      空闲时保持系统默认行为
 - [x] Windows 安装包（Inno Setup）：免管理员安装、开始菜单/桌面快捷方式、
       便携 conda 环境随包分发、卸载保留 workspaces/outputs/logs
 - [x] 启动器版本元数据与版本号单一来源（唯一来源 `gui/app_version.py`，
@@ -52,30 +54,24 @@
 - [x] 安装包瘦身：示例数据集照片由 3072px 重编码到长边 1600（COLMAP 的
       `max_image_size` 默认就是 1600，原图本来也会被缩到这一步，零精度损失），
       223 MB → 65 MB，安装包减小约 158 MB
+- [x] 安装包再瘦身（2.4.0）：排除 vksplat 的 CMake 缓存与 third_party、依赖包
+      tests 目录，551.6 MB → 534.4 MB
 - [x] 许可证切换为 Apache-2.0（PySide6/Qt 为 LGPLv3 动态链接，随附声明）
 
 ## 🔜 近期计划（高优先级）
 
 ### P8：无 GUI 批处理模式（headless）
 
-除 `doctor.py` 外全项目没有 argparse 入口，训练必须开着 GUI 点按钮，导致 30000 步的
-长任务无法脚本化、无法挂机排队、也无法一次跑多个场景。
+已实现最小版本：`gui/pipeline_cli.py` 复用 `PipelineCore`，交互点自动应答
+（续训保留恢复点、可复用的空间定位直接复用、重复训练照常重训），
+退出码 0 成功 / 1 失败 / 2 未启动 / 130 中断并保存恢复点。
 
-- `PipelineCore` 已经通过 Tk-Var 风格的适配对象读取界面状态（见 `quick_gui.py`
-  的 Var 适配层），所以 headless 不必重构管线：实现一个同接口的**无界面宿主**，
-  从命令行参数 / JSON 填充这些 Var 即可
-- 需要自动应答的交互点：`ask_continue()`、`ask_resume()`（checkpoint 询问），
-  用 `--yes` / `--resume=auto|new|skip` 之类的开关替代弹窗
-- 退出码要可判定（成功 / COLMAP 失败 / 训练失败 / 用户 STOP），便于外部脚本串联
-- 入口形态：新增 `gui/pipeline_cli.py`，按现有习惯用路径直接运行
-  （`python gui/pipeline_cli.py --images <dir> --preset standard --out <ply>`，
-  `gui` 不是 package，不要设计成 `-m` 形式）；再加一个 `run_cli.bat`，
-  复用 `run.bat` 里的 Python 探测逻辑，免管理员安装的便携环境同样可用
-  —— 解释器扫描列表目前在 `run.bat` 和 `download_tools.ps1` 里各写了一份
-  （20 多个候选路径），做 CLI 时顺手抽成一个共享脚本；`installer/launcher.py`
-  只用固定的 `env\vksplat\pythonw.exe`，不参与扫描
+- [x] 无界面宿主（Tk-Var 风格适配对象 + 命令行参数填充）
+- [x] `--colmap-only` / `--train-only` / `--force-colmap`，质量档位与步数可覆盖
+- [x] 退出码可判定，便于外部脚本串联
+- [ ] `run_cli.bat` 与解释器探测共享脚本（目前需手动指定 `env\vksplat\python.exe`）
+- [ ] 一次排队跑多个场景（读取场景清单）
 - GUI 保持默认路径不变，两者共用 `PipelineCore`
-- 顺带收益：可以拿真实小数据集在 CI 里跑端到端冒烟测试（目前 CI 只有语法编译和单测）
 
 ## 🔭 中期计划
 
@@ -103,10 +99,10 @@ COLMAP 只能恢复到一个未知相似变换，导出的 PLY 没有米制尺�
 
 ### 分发工程
 
-- [ ] CI 增加安装包构建 job：目前 `.github/workflows/ci.yml` 只有语法编译 + 单测 +
+- [ ] （暂缓）CI 增加安装包构建 job：目前 `.github/workflows/ci.yml` 只有语法编译 + 单测 +
       doctor 冒烟，`setup.exe` 仍需本地手跑 `installer/build_setup.ps1`。
-      加 tag 触发的 `windows-latest` job 产出 artifact，并自动写 SHA-256 到 Release 正文
-      （README 现在让用户自己核对哈希，这步应该由流水线代劳）
+      **项目仍是简易形态，暂不搭流水线**；将来用户量上来再加 tag 触发的
+      `windows-latest` job，并自动写 SHA-256 到 Release 正文
 - [x] **仓库改 public**：2026-10-19 已公开。匿名接口实测 `private=false`、
       `releases/latest` 返回 v2.3.2、对下载直链取前 1 KB 得到 206 且魔数是 `MZ`
       （Content-Range 总长与包大小一致），所以 README「到 Releases 页面下载安装包」

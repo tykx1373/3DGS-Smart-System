@@ -14,12 +14,13 @@ import threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QEvent
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QFileDialog, QListWidget, QStackedWidget, QLabel, QPushButton,
     QLineEdit, QCheckBox, QRadioButton, QComboBox, QSpinBox, QMessageBox,
+    QSystemTrayIcon, QMenu, QStyle,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -135,6 +136,10 @@ class MainWindow(QMainWindow, PipelineCore):
         self.sig = _Signals()
         # 自检窗口只保留一个实例：连点按钮时复用它，不再叠出多个检测线程
         self._syscheck_dlg = None
+        # 任务是否在运行：只有运行中才允许最小化/关闭到托盘
+        self._task_running = False
+        self._tray = None
+        self._tray_menu = None
         # tqdm 刷屏治理：按「阶段名 -> 已写到的百分比桶」去重，
         # 每个阶段每 10% 只留一行（训练阶段由 PROGRESS 驱动，完全不记）
         self._tqdm_bucket = {}
@@ -206,6 +211,7 @@ class MainWindow(QMainWindow, PipelineCore):
         self._connect_signals()
         self._wire_change_tracking()
         self._update_photo_gate()      # 启动时还没选照片，「下一步」保持不可点
+        self._setup_tray()
 
         if syscheck.is_first_run():
             # 首次启动的自动自检：全部通过时自动收起，不挡住用户选照片
@@ -506,6 +512,7 @@ class MainWindow(QMainWindow, PipelineCore):
             self.status_lab.setText(detail)
 
     def _apply_running(self, running, indeterminate):
+        self._task_running = bool(running)
         self.ind_bar.setVisible(running and indeterminate)
         self.det_bar.setVisible(running and not indeterminate)
         if running:
@@ -528,6 +535,82 @@ class MainWindow(QMainWindow, PipelineCore):
         self.run_btn.setEnabled(not running)
         self.rerun_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
+        # 任务是在托盘里跑完的：留一条气泡，窗口仍由用户自己决定何时打开
+        if not running and self._tray is not None and self._tray.isVisible():
+            self._tray.showMessage(
+                "3DGS 快速管线", "任务已结束，点击托盘图标查看结果。",
+                QSystemTrayIcon.MessageIcon.Information, 5000)
+
+    # ------------------------------------------------ 系统托盘 ----
+    def _setup_tray(self):
+        """任务运行中最小化/关闭时收进托盘；空闲时保持系统默认行为。"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray = None
+            return
+        icon_path = find_app_icon()
+        icon = (QIcon(icon_path) if icon_path
+                else self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        self._tray = QSystemTrayIcon(icon, self)
+        self._tray.setToolTip("3DGS 快速管线")
+        menu = QMenu(self)
+        menu.addAction("显示主窗口").triggered.connect(self._restore_from_tray)
+        menu.addAction("退出程序").triggered.connect(self._quit_from_tray)
+        self._tray_menu = menu
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._on_tray_activated)
+
+    def _on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._restore_from_tray()
+
+    def _hide_to_tray(self):
+        if self._tray is None:
+            self.showMinimized()
+            return
+        self.hide()
+        self._tray.show()
+        self._tray.showMessage(
+            "3DGS 快速管线", "已收进托盘，任务继续在后台运行。",
+            QSystemTrayIcon.MessageIcon.Information, 3000)
+
+    def _restore_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if self._tray is not None:
+            self._tray.hide()
+
+    def _quit_from_tray(self):
+        if self._task_running:
+            # 直接退出会把训练进程带走，先把窗口叫回来让用户自己停
+            self._restore_from_tray()
+            Toast.show_toast(self, "任务还在进行",
+                             "请先在运行页点「停止」，保存完成后再退出。",
+                             "warning", 5000)
+            return
+        QApplication.instance().quit()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if (event.type() == QEvent.Type.WindowStateChange
+                and self._task_running and self._tray is not None
+                and self.isMinimized()):
+            QTimer.singleShot(0, self._hide_to_tray)
+
+    def closeEvent(self, event):
+        if self._task_running and self._tray is not None:
+            # 关窗口不等于停任务：先明确告知会收进托盘，别让用户以为训练被关掉了
+            to_tray = confirm(
+                self, "任务还在进行",
+                "关闭窗口不会停止任务：程序会收进系统托盘，训练继续在后台运行。\n\n"
+                "要彻底退出，请先在运行页点「停止」，等进度保存后再关闭。",
+                "收进托盘", "取消")
+            if to_tray:
+                self._hide_to_tray()
+            event.ignore()
+            return
+        event.accept()
 
     # ------------------------------------------------ PipelineCore 宿主 ----
     def set_status(self, text):

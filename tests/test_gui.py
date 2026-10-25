@@ -1222,5 +1222,38 @@ class TestTrainConfigReuse(unittest.TestCase):
         self.assertFalse(q.train_config_matches(self.ws, self.img, self.settings)[0])
 
 
+class TestCliHost(unittest.TestCase):
+    """无界面批量入口：参数映射与自动应答，不需要真的跑管线。"""
+
+    def _host(self, *extra):
+        import pipeline_cli as cli
+        args = cli.build_parser().parse_args(["--images", ROOT] + list(extra))
+        return cli, cli.CliHost(args)
+
+    def test_quality_preset_sets_steps(self):
+        _cli, host = self._host("--quality", "fast")
+        self.assertEqual(host.quality_var.get(), "快速")
+        self.assertEqual(host.vs_steps_var.get(), 5000)
+
+    def test_steps_override(self):
+        _cli, host = self._host("--steps", "1234")
+        self.assertEqual(host.vs_steps_var.get(), 1234)
+
+    def test_interactions_are_unattended(self):
+        _cli, host = self._host()
+        self.assertTrue(host.ask_continue(True))
+        self.assertEqual(host.ask_retrain_existing("x", {}), "retrain")
+        self.assertTrue(host.ask_reuse_colmap(3, "x"))
+        self.assertTrue(host.ask_capture_report({}))
+
+    def test_missing_images_returns_2(self):
+        import pipeline_cli as cli
+        self.assertEqual(cli.main(["--images", os.path.join(ROOT, "no-such-dir-xyz")]), 2)
+
+    def test_colmap_only_and_train_only_conflict(self):
+        import pipeline_cli as cli
+        self.assertEqual(cli.main(["--images", ROOT, "--colmap-only", "--train-only"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
