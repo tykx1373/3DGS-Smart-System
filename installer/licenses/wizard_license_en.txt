@@ -1,0 +1,55 @@
+3DGS Quick Pipeline — Software License and Third-Party Notices
+
+Copyright (C) 2026 3DGS Studio
+
+1. Original code of this software
+The original source code of this software (the gui code, the original parts of
+tools/vksplat, the launcher, etc.) is released under the Apache License 2.0.
+The full license text is in the LICENSE file in the installation directory.
+License URL: https://www.apache.org/licenses/LICENSE-2.0
+
+2. Bundled third-party open-source components
+This installer bundles the following third-party components in aggregate form.
+Their copyrights belong to their respective owners and their original licenses
+apply. Your use of these components is also subject to the corresponding
+license terms:
+
+  1. PySide6 6.8.3, shiboken6 6.8.3, and the Qt runtime
+     The Qt Company Ltd. and others; GNU LGPL v3 / commercial dual license.
+     This software uses them via dynamic linking and has not modified them.
+     Under LGPL v3 Section 4 you may replace the PySide6 / shiboken6 files under
+     env\vksplat\Lib\site-packages in the installation directory with a version
+     of your choice. The full LGPL v3 text is in licenses\lgpl-3.0.txt;
+     source code: https://download.qt.io/official_releases/QtForPython/
+
+  2. Python 3.10 — Python Software Foundation License (PSF)
+  3. PyTorch / torchvision — BSD 3-Clause License
+  4. OpenCV — Apache License 2.0
+  5. NumPy — BSD 3-Clause License
+  6. COLMAP — BSD 3-Clause License (binary bundled in the tools directory)
+  7. VkSplat — Apache License 2.0 (source and license under tools\vksplat)
+  8. vk_gaussian_splatting viewer — binary published upstream; copyright and
+     license follow the upstream release (see the tools directory)
+  9. Other Python dependency packages — see the metadata (dist-info) in each
+     package directory
+
+See licenses\THIRD_PARTY_NOTICES.txt in the installation directory for the more
+complete third-party notices.
+
+3. Disclaimer
+This software is provided "as is", without any express or implied warranty,
+including but not limited to warranties of merchantability, fitness for a
+particular purpose, and non-infringement. In no event shall the authors or
+copyright holders be liable for any direct or indirect damages arising from the
+use of this software. Training and rendering speed and quality depend on your
+hardware (in particular a Vulkan-capable NVIDIA/AMD/Intel GPU) and the quality
+of the input photos.
+
+4. Data retention
+The uninstaller keeps your working data by default: workspaces (photos and
+projects), outputs (generated models), and logs in the installation directory.
+It asks before uninstalling whether to delete them; silent uninstallation keeps
+them by default.
+
+By clicking "I accept" you agree to this notice and to the terms of the licenses
+listed above.

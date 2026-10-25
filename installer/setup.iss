@@ -7,7 +7,7 @@
 ; 版本号的唯一来源是 gui\app_version.py 的 APP_VERSION（build_setup.ps1 解析后
 ; 通过 /DMyAppVersion= 传入）；直接用 ISCC 编译时用此处默认值，改版本请两处同步
 #ifndef MyAppVersion
-  #define MyAppVersion "2.4.0"
+  #define MyAppVersion "2.4.1"
 #endif
 #define MyAppPublisher "3DGS Studio"
 #define MyAppExeName "3DGS-Studio.exe"
@@ -48,20 +48,40 @@ RestartApplications=no
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 英文向导用标准消息；许可页换成英文版，避免中文条款
+Name: "english"; MessagesFile: "compiler:Default.isl"; LicenseFile: "licenses\wizard_license_en.txt"
+
+[CustomMessages]
+chinesesimplified.CreateDesktopIcon=在桌面创建快捷方式
+english.CreateDesktopIcon=Create a desktop shortcut
+chinesesimplified.AdditionalIcons=附加快捷方式：
+english.AdditionalIcons=Additional shortcuts:
+chinesesimplified.TypeFull=完整安装（推荐）
+english.TypeFull=Full installation (recommended)
+chinesesimplified.TypeCompact=精简安装（不含示例数据集与 CUDA 加速）
+english.TypeCompact=Compact installation (without sample dataset and CUDA acceleration)
+chinesesimplified.TypeCustom=自定义安装
+english.TypeCustom=Custom installation
+chinesesimplified.ComponentColmapCuda=COLMAP CUDA 加速版（约 741 MB，仅 NVIDIA 显卡生效，特征提取更快）
+english.ComponentColmapCuda=COLMAP CUDA build (about 741 MB, NVIDIA GPUs only; faster feature extraction)
+chinesesimplified.ComponentSamples=示例数据集 south-building（约 65 MB，装完可直接跑通完整流程）
+english.ComponentSamples=Sample dataset south-building (about 65 MB; run the full pipeline right after install)
+chinesesimplified.LaunchApp=立即启动 {#MyAppName}
+english.LaunchApp=Launch {#MyAppName} now
 
 [Tasks]
-Name: "desktopicon"; Description: "在桌面创建快捷方式"; GroupDescription: "附加快捷方式："
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Types]
-Name: "full"; Description: "完整安装（推荐）"
-Name: "compact"; Description: "精简安装（不含示例数据集与 CUDA 加速）"
-Name: "custom"; Description: "自定义安装"; Flags: iscustom
+Name: "full"; Description: "{cm:TypeFull}"
+Name: "compact"; Description: "{cm:TypeCompact}"
+Name: "custom"; Description: "{cm:TypeCustom}"; Flags: iscustom
 
 [Components]
 ; noCUDA 版 COLMAP 为必装基础组件（纯 CPU，所有显卡通用），不列为可选组件；
 ; CUDA 版仅 NVIDIA 显卡可用，检测到 N 卡时默认勾选（见 [Code] IsNvidiaMachine）
-Name: "colmapcuda"; Description: "COLMAP CUDA 加速版（约 741 MB，仅 NVIDIA 显卡生效，特征提取更快）"; Types: full; Check: IsNvidiaMachine
-Name: "samples"; Description: "示例数据集 south-building（约 65 MB，装完可直接跑通完整流程）"; Types: full
+Name: "colmapcuda"; Description: "{cm:ComponentColmapCuda}"; Types: full; Check: IsNvidiaMachine
+Name: "samples"; Description: "{cm:ComponentSamples}"; Types: full
 
 [Dirs]
 ; 用户数据目录：卸载时永不删除
@@ -79,6 +99,7 @@ Source: "{#SrcRoot}{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; tests/ 同为开发产物，不分发。
 Source: "{#SrcRoot}doctor.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SrcRoot}README.en.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ---- 许可证与第三方声明 ----
@@ -122,7 +143,7 @@ Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; Comment: "基于 Vulkan 的轻量化三维高斯重建管线"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
 
 [InstallDelete]
 ; 覆盖安装旧版本时，清掉早期版本曾分发、现已不再打包的开发脚手架/目录
