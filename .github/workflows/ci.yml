@@ -18,6 +18,10 @@ jobs:
     # (see environment.yaml and syscheck.check_python).
     name: checks (Python ${{ matrix.python-version }})
     runs-on: windows-latest
+    env:
+      # Windows runner 的管道默认 cp1252，中文日志会变 ?????；统一 UTF-8 输出。
+      # 这不会掩盖编码问题：test_gui.py 里有专门的 cp1252 回归测试。
+      PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:
