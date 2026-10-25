@@ -24,6 +24,7 @@ Photo folder → COLMAP sparse reconstruction → VkSplat (Vulkan) training → 
 - [Workflow](#workflow)
 - [Quality Presets](#quality-presets)
 - [FAQ](#faq)
+- [Known Issues](#known-issues)
 - [License](#license)
 
 ---
@@ -372,6 +373,12 @@ A: The window title bar and sidebar brand area show the version (e.g. `v2.4.1`);
 
 **Q: Where are the logs?**
 A: The "Run log" expander at the bottom of the GUI shows the live log; daily logs are kept under `logs/`.
+
+---
+
+## Known Issues
+
+Confirmed issues that are not fixed yet, or not yet included in a release, are tracked in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) (Chinese).
 
 ---
 

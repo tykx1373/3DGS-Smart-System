@@ -100,6 +100,7 @@ Source: "{#SrcRoot}{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}doctor.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}README.en.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SrcRoot}KNOWN_ISSUES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRoot}LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ---- 许可证与第三方声明 ----
